@@ -1,0 +1,121 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.os }} / c++
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DGMF_BUILD_TESTS=ON
+          -DGMF_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Solve the example from the README
+        shell: bash
+        run: |
+          exe=./build/gmaxflow
+          [ -x "$exe" ] || exe=./build/Release/gmaxflow.exe
+          echo '{"source":"s","sink":"t","adjacency":{"s":[{"to":"a","capacity":10,"multiplier":1.0}],"a":[{"to":"t","capacity":5,"multiplier":2.0}]}}' \
+            | "$exe" -c
+
+  linear-program-cross-check:
+    name: cross-check against scipy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install --upgrade scipy numpy
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGMF_BUILD_TESTS=OFF
+          cmake --build build --config Release --parallel
+
+      - name: Lossy networks
+        run: python tools/lp_check.py --exe build/gmaxflow --trials 400 --max-multiplier 1.0 --seed 101
+
+      - name: Gain-amplifying networks
+        run: python tools/lp_check.py --exe build/gmaxflow --trials 400 --max-multiplier 3.0 --seed 202
+
+      - name: Larger networks
+        run: python tools/lp_check.py --exe build/gmaxflow --trials 150 --max-multiplier 2.0 --max-nodes 30 --seed 505
+
+      - name: The documented examples
+        run: >
+          python tools/lp_check.py --exe build/gmaxflow
+          --graph examples/power_grid.json
+          --graph examples/rerouting.json
+          --graph examples/currency_arbitrage.json
+
+  python:
+    name: python ${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - run: python -m pip install --upgrade pip pytest
+      - run: python -m pip install .
+      - run: python -m pytest -q tests/test_python.py
+
+      - name: The console script works
+        shell: bash
+        run: |
+          echo '{"source":0,"sink":1,"edges":[{"from":0,"to":1,"capacity":4,"multiplier":0.5}]}' \
+            | gmaxflow --compact
+
+  wasm:
+    name: webassembly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Emscripten SDK
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$HOME/emsdk"
+          "$HOME/emsdk/emsdk" install latest
+          "$HOME/emsdk/emsdk" activate latest
+
+      - name: Build and smoke-test
+        run: |
+          source "$HOME/emsdk/emsdk_env.sh"
+          bash bindings/wasm/build.sh --test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-package
+          path: bindings/wasm/pkg

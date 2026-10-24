@@ -1,0 +1,20 @@
+{
+  "_comment": "Transmission with line losses. Each line delivers less than it takes, so the useful question is not how much leaves the plant but how much reaches the city.",
+  "source": "plant",
+  "sink": "city",
+  "adjacency": {
+    "plant": [
+      { "to": "substation_north", "capacity": 600, "multiplier": 0.97 },
+      { "to": "substation_south", "capacity": 450, "multiplier": 0.94 }
+    ],
+    "substation_north": [
+      { "to": "trunk", "capacity": 500, "multiplier": 0.98 },
+      { "to": "substation_south", "capacity": 200, "multiplier": 0.995 }
+    ],
+    "substation_south": [
+      { "to": "trunk", "capacity": 300, "multiplier": 0.96 },
+      { "to": "city", "capacity": 250, "multiplier": 0.9 }
+    ],
+    "trunk": [{ "to": "city", "capacity": 700, "multiplier": 0.99 }]
+  }
+}

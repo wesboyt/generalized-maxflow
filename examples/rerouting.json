@@ -1,0 +1,12 @@
+{
+  "_comment": "The highest-gain path is s -> a -> b -> t, and filling it claims the only capacity into the sink. Reaching the optimum of 3 then requires pushing flow back over a -> b, which shows up in the answer as a step with direction: backward. A greedy pass that cannot undo a choice stops at 2.",
+  "source": "s",
+  "sink": "t",
+  "edges": [
+    { "from": "s", "to": "a", "capacity": 1, "multiplier": 1.0 },
+    { "from": "s", "to": "b", "capacity": 1, "multiplier": 1.0 },
+    { "from": "a", "to": "t", "capacity": 1, "multiplier": 1.0 },
+    { "from": "b", "to": "t", "capacity": 1, "multiplier": 2.0 },
+    { "from": "a", "to": "b", "capacity": 1, "multiplier": 1.5 }
+  ]
+}

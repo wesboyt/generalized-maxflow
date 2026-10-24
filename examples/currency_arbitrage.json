@@ -1,0 +1,14 @@
+{
+  "_comment": "Exchange rates are multipliers, and a cycle of rates whose product exceeds 1 is arbitrage: it manufactures money. Here no capital starts at the desk, yet flow still reaches the sink, which is what a flow-generating cycle means. The answer reports it as kind: flow_generating_cycle, with the excess it produced.",
+  "source": "desk",
+  "sink": "settled_usd",
+  "adjacency": {
+    "desk": [{ "to": "usd", "capacity": 0, "multiplier": 1.0 }],
+    "usd": [
+      { "to": "eur", "capacity": 1000, "multiplier": 0.92 },
+      { "to": "settled_usd", "capacity": 100000, "multiplier": 1.0 }
+    ],
+    "eur": [{ "to": "jpy", "capacity": 2000, "multiplier": 171.0 }],
+    "jpy": [{ "to": "usd", "capacity": 400000, "multiplier": 0.0068 }]
+  }
+}

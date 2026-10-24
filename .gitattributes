@@ -1,0 +1,3 @@
+# Keep line endings as LF everywhere; bindings/wasm/build.sh must stay LF to run.
+* text=auto eol=lf
+*.wasm binary

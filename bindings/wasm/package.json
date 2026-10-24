@@ -1,0 +1,50 @@
+{
+  "name": "generalized-maxflow",
+  "version": "0.1.0",
+  "description": "Generalized maximum flow: maximum flow with per-edge gain multipliers, compiled to WebAssembly",
+  "type": "module",
+  "main": "./index.mjs",
+  "module": "./index.mjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.mjs"
+    },
+    "./gmaxflow.wasm": "./gmaxflow.wasm"
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "gmaxflow.js",
+    "gmaxflow.wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "maximum-flow",
+    "generalized-flow",
+    "network-flow",
+    "graph",
+    "optimization",
+    "wasm",
+    "webassembly"
+  ],
+  "author": "wesboyt",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wesboyt/generalized-maxflow.git"
+  },
+  "homepage": "https://github.com/wesboyt/generalized-maxflow#readme",
+  "bugs": {
+    "url": "https://github.com/wesboyt/generalized-maxflow/issues"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "test": "node test_node.mjs"
+  },
+  "sideEffects": false
+}

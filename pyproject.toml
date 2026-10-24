@@ -1,0 +1,67 @@
+[build-system]
+requires = ["scikit-build-core>=0.8"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "generalized-maxflow"
+version = "0.1.0"
+description = "Generalized maximum flow: maximum flow with per-edge gain multipliers"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+authors = [{ name = "wesboyt" }]
+maintainers = [{ name = "wesboyt" }]
+keywords = [
+  "maximum-flow",
+  "generalized-flow",
+  "network-flow",
+  "graph",
+  "optimization",
+  "lossy-network",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+[project.urls]
+Homepage = "https://github.com/wesboyt/generalized-maxflow"
+Source = "https://github.com/wesboyt/generalized-maxflow"
+Issues = "https://github.com/wesboyt/generalized-maxflow/issues"
+
+[project.scripts]
+gmaxflow = "gmaxflow.__main__:main"
+
+[tool.scikit-build]
+minimum-version = "0.8"
+cmake.version = ">=3.18"
+wheel.packages = ["python/gmaxflow"]
+sdist.include = ["include", "src", "bindings", "tests", "tools", "CMakeLists.txt"]
+sdist.exclude = ["build", "dist", ".github", "*.egg-info"]
+
+[tool.scikit-build.cmake.define]
+GMF_BUILD_PYTHON = "ON"
+GMF_BUILD_TESTS = "OFF"
+GMF_BUILD_CLI = "OFF"
+
+[tool.cibuildwheel]
+build = "cp38-* cp39-* cp310-* cp311-* cp312-* cp313-*"
+skip = ["pp*", "*-musllinux_i686", "*_i686"]
+build-frontend = "build"
+test-requires = ["pytest"]
+test-command = "pytest -q {project}/tests/test_python.py"
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64", "aarch64"]
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.15" }
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
