@@ -23,11 +23,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument("-o", "--output", help="write the answer here instead of stdout")
     parser.add_argument("-c", "--compact", action="store_true", help="emit one line of JSON")
-    parser.add_argument(
-        "--threads",
-        type=int,
-        help="fan the path search out across this many threads (0 = every core)",
-    )
     parser.add_argument("-v", "--version", action="version", version=version())
     arguments = parser.parse_args(argv)
 
@@ -47,8 +42,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if isinstance(request, dict):
         options = dict(request.get("options") or {})
         options["pretty"] = not arguments.compact
-        if arguments.threads is not None:
-            options["threads"] = arguments.threads
         request["options"] = options
 
     answer = solve_json(json.dumps(request))

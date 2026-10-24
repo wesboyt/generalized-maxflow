@@ -124,7 +124,7 @@ TEST(options_are_read_from_the_request) {
   const gmf::json::Value answer = solve(R"({
     "source": "s", "sink": "t",
     "edges": [{"from": "s", "to": "t", "capacity": 2, "multiplier": 1}],
-    "options": {"threads": 2, "collect_paths": false, "pretty": true}
+    "options": {"collect_paths": false, "pretty": true}
   })");
   CHECK(answer.find("paths")->as_array().empty());
   CHECK_NEAR(number(answer, "max_flow"), 2.0, 1e-9);

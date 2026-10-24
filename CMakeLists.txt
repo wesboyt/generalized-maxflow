@@ -34,14 +34,15 @@ endif()
 option(GMF_BUILD_PYTHON "Build the CPython extension module" ${GMF_PYTHON_DEFAULT})
 option(GMF_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
-# WebAssembly has no threads unless the page opts into SharedArrayBuffer, so the
-# parallel sweep is compiled out there and the solver runs its sequential engine.
+# Emscripten compiles with exceptions disabled by default, which turns a throw
+# into a module-level abort. The JSON front door reports a malformed graph by
+# catching the exception validation raises, so without this the solver aborts
+# instead of returning {"status": "invalid_input"} -- which is what the Node
+# smoke test caught. These must be set before the targets they apply to.
 if(EMSCRIPTEN)
-  set(GMF_THREADS_DEFAULT OFF)
-else()
-  set(GMF_THREADS_DEFAULT ON)
+  add_compile_options(-fexceptions)
+  add_link_options(-fexceptions)
 endif()
-option(GMF_ENABLE_THREADS "Build the multi-threaded path search" ${GMF_THREADS_DEFAULT})
 
 add_library(gmf_core STATIC
   src/json.cpp
@@ -50,15 +51,6 @@ add_library(gmf_core STATIC
 target_include_directories(gmf_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-
-if(GMF_ENABLE_THREADS)
-  set(THREADS_PREFER_PTHREAD_FLAG ON)
-  find_package(Threads REQUIRED)
-  target_link_libraries(gmf_core PUBLIC Threads::Threads)
-  target_compile_definitions(gmf_core PUBLIC GMF_ENABLE_THREADS=1)
-else()
-  target_compile_definitions(gmf_core PUBLIC GMF_ENABLE_THREADS=0)
-endif()
 
 if(MSVC)
   target_compile_options(gmf_core PRIVATE /W4 /permissive-)

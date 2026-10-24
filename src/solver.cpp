@@ -1,23 +1,13 @@
 #include "gmf/gmf.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <memory>
 #include <stdexcept>
 #include <vector>
-
-// Set to 0 to build without the parallel sweep, as the WebAssembly build does.
-#ifndef GMF_ENABLE_THREADS
-#define GMF_ENABLE_THREADS 1
-#endif
-#if GMF_ENABLE_THREADS
-#include <thread>
-#endif
 
 namespace gmf {
 namespace {
@@ -159,7 +149,6 @@ class Solver {
 
   Result run() {
     Result result;
-    result.stats.threads_used = thread_count_;
     stats_ = &result.stats;
     Timer total(result.stats.seconds);
 
@@ -314,15 +303,6 @@ class Solver {
     node_.assign(nodes, NodeState());
     reaches_sink_.assign(nodes, 0);
 
-    thread_count_ = 1;
-#if GMF_ENABLE_THREADS
-    thread_count_ = options_.threads;
-    if (thread_count_ == 0) {
-      thread_count_ = static_cast<int>(std::thread::hardware_concurrency());
-      if (thread_count_ <= 0) thread_count_ = 1;
-    }
-    thread_count_ = std::max(1, thread_count_);
-#endif
   }
 
   std::size_t working_bytes() const {
@@ -400,6 +380,7 @@ class Solver {
   // arcs only between nodes that are already in it, so no node outside gains a
   // way in. It is therefore recomputed only alongside the potentials.
   void compute_reaches_sink() {
+    Timer timer(stats_ != nullptr ? stats_->reach_seconds : discarded_seconds_);
     std::fill(reaches_sink_.begin(), reaches_sink_.end(), static_cast<char>(0));
     mask_is_full_ = false;
     queue_.clear();
@@ -490,18 +471,6 @@ class Solver {
       }
     }
 
-#if GMF_ENABLE_THREADS
-    if (thread_count_ > 1 && !sweep_parallel(stats)) {
-      ++stats.parallel_fallbacks;
-      if (!sweep_sequential(stats)) return resolve_sweep_failure();
-      potentials_from_labels();
-      return true;
-    }
-    if (thread_count_ > 1) {
-      potentials_from_labels();
-      return true;
-    }
-#endif
     if (!sweep_sequential(stats)) return resolve_sweep_failure();
     potentials_from_labels();
     if (!from_scratch && !potentials_are_feasible()) {
@@ -516,7 +485,8 @@ class Solver {
 
   // Every residual arc inside the mask must satisfy
   // label[v] >= label[u] + log g, which is exactly "reduced cost non-negative".
-  bool potentials_are_feasible() const {
+  bool potentials_are_feasible() {
+    Timer timer(stats_ != nullptr ? stats_->verify_seconds : discarded_seconds_);
     for (int node = 0; node < num_nodes_; ++node) {
       if (!in_mask(node)) continue;
       const double base = label_[static_cast<std::size_t>(node)];
@@ -607,6 +577,7 @@ class Solver {
   // Returns false when a gain-amplifying cycle is found; the node it runs
   // through is left in cycle_seed_.
   bool sweep_sequential(Stats& stats) {
+    Timer timer(stats.sweep_seconds);
     std::size_t cursor = 0;
     long long relaxations = 0;
     long long since_check = 0;
@@ -678,94 +649,6 @@ class Solver {
     stats.relaxations += relaxations;
     return true;
   }
-
-#if GMF_ENABLE_THREADS
-  // The same sweep, fanned out across threads: each round expands the whole
-  // current frontier at once. Only the potential-establishing sweeps go through
-  // here, so on a network without amplifying cycles this runs once.
-  bool sweep_parallel(Stats& stats) {
-    const std::size_t nodes = static_cast<std::size_t>(num_nodes_);
-    if (atomic_label_ == nullptr || atomic_capacity_ < nodes) {
-      atomic_label_ = std::make_unique<std::atomic<double>[]>(nodes);
-      atomic_parent_ = std::make_unique<std::atomic<int32_t>[]>(nodes);
-      queued_ = std::make_unique<std::atomic<bool>[]>(nodes);
-      atomic_capacity_ = nodes;
-    }
-    for (std::size_t i = 0; i < nodes; ++i) {
-      atomic_label_[i].store(label_[i], std::memory_order_relaxed);
-      atomic_parent_[i].store(-1, std::memory_order_relaxed);
-      queued_[i].store(false, std::memory_order_relaxed);
-    }
-
-    std::vector<int32_t> frontier(queue_.begin(), queue_.end());
-    std::vector<std::vector<int32_t>> next(static_cast<std::size_t>(thread_count_));
-    std::atomic<long long> relaxations{0};
-    int rounds = 0;
-
-    while (!frontier.empty()) {
-      if (++rounds > num_nodes_ + 1) return false;  // gain-amplifying cycle
-      for (std::vector<int32_t>& bucket : next) bucket.clear();
-
-      const auto worker = [&](int slot) {
-        std::vector<int32_t>& local = next[static_cast<std::size_t>(slot)];
-        long long local_relaxations = 0;
-        for (std::size_t i = static_cast<std::size_t>(slot); i < frontier.size();
-             i += static_cast<std::size_t>(thread_count_)) {
-          const int node = frontier[i];
-          const double base =
-              atomic_label_[static_cast<std::size_t>(node)].load(std::memory_order_relaxed);
-          if (base == kNegInf) continue;
-          const int32_t end = net_.arc_begin[static_cast<std::size_t>(node) + 1];
-          for (int32_t a = net_.arc_begin[static_cast<std::size_t>(node)]; a < end; ++a) {
-            if (net_.residual[static_cast<std::size_t>(a)] <= capacity_epsilon_ || blocked(a)) {
-              continue;
-            }
-            const int next_node = net_.head[static_cast<std::size_t>(a)];
-            if (!in_mask(next_node)) continue;
-            const double candidate = base - net_.cost[static_cast<std::size_t>(a)];
-            std::atomic<double>& slot_label = atomic_label_[static_cast<std::size_t>(next_node)];
-            double current = slot_label.load(std::memory_order_relaxed);
-            while (candidate > current + log_epsilon_) {
-              if (slot_label.compare_exchange_weak(current, candidate,
-                                                   std::memory_order_relaxed)) {
-                atomic_parent_[static_cast<std::size_t>(next_node)].store(
-                    a, std::memory_order_relaxed);
-                ++local_relaxations;
-                if (!queued_[static_cast<std::size_t>(next_node)].exchange(
-                        true, std::memory_order_relaxed)) {
-                  local.push_back(next_node);
-                }
-                break;
-              }
-            }
-          }
-        }
-        relaxations.fetch_add(local_relaxations, std::memory_order_relaxed);
-      };
-
-      std::vector<std::thread> pool;
-      pool.reserve(static_cast<std::size_t>(thread_count_ - 1));
-      for (int slot = 1; slot < thread_count_; ++slot) pool.emplace_back(worker, slot);
-      worker(0);
-      for (std::thread& thread : pool) thread.join();
-
-      frontier.clear();
-      for (const std::vector<int32_t>& bucket : next) {
-        for (const int32_t node : bucket) {
-          queued_[static_cast<std::size_t>(node)].store(false, std::memory_order_relaxed);
-          frontier.push_back(node);
-        }
-      }
-    }
-
-    stats.relaxations += relaxations.load();
-    for (std::size_t i = 0; i < nodes; ++i) {
-      label_[i] = atomic_label_[i].load(std::memory_order_relaxed);
-      node_[i].parent = atomic_parent_[i].load(std::memory_order_relaxed);
-    }
-    return true;
-  }
-#endif
 
   // Full Bellman-Ford rounds, used only to extract a cycle the queue-based
   // sweep detected but whose parent pointers had already moved on.
@@ -1374,9 +1257,9 @@ class Solver {
   const Problem& problem_;
   const Options& options_;
   int num_nodes_ = 0;
-  int thread_count_ = 1;
   long long blocked_arcs_ = 0;
   Stats* stats_ = nullptr;
+  double discarded_seconds_ = 0.0;
 
   Layout net_;
 
@@ -1420,13 +1303,6 @@ class Solver {
   // network without flow-generating cycles.
   std::vector<double> arc_coefficient_;
   std::vector<double> arc_delta_;
-
-#if GMF_ENABLE_THREADS
-  std::unique_ptr<std::atomic<double>[]> atomic_label_;
-  std::unique_ptr<std::atomic<int32_t>[]> atomic_parent_;
-  std::unique_ptr<std::atomic<bool>[]> queued_;
-  std::size_t atomic_capacity_ = 0;
-#endif
 
   double capacity_scale_ = 1.0;
   double capacity_epsilon_ = 0.0;

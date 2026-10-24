@@ -54,8 +54,6 @@ export interface Stats {
   path_searches: number;
   cycle_searches: number;
   relaxations: number;
-  parallel_fallbacks: number;
-  threads_used: number;
 }
 
 export type Status =
@@ -95,8 +93,6 @@ export interface EdgeInput {
 
 export interface Options {
   epsilon?: number;
-  /** 1 = sequential, 0 = every core. */
-  threads?: number;
   max_iterations?: number;
   collect_paths?: boolean;
   cancel_generating_cycles?: boolean;

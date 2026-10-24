@@ -1,0 +1,68 @@
+name: demo
+
+# Builds the WebAssembly solver and publishes the browser demo to GitHub Pages.
+# Pages has to be enabled once for the repository, under Settings -> Pages, with
+# the source set to "GitHub Actions". Until then this job will fail at the
+# deploy step while still leaving the built demo as a downloadable artifact.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build the demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Emscripten SDK
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$HOME/emsdk"
+          "$HOME/emsdk/emsdk" install latest
+          "$HOME/emsdk/emsdk" activate latest
+
+      - name: Build the WebAssembly package
+        run: |
+          source "$HOME/emsdk/emsdk_env.sh"
+          bash bindings/wasm/build.sh --test
+
+      - name: Assemble the site
+        run: |
+          mkdir -p site
+          cp docs/demo/index.html site/
+          cp bindings/wasm/pkg/index.mjs bindings/wasm/pkg/gmaxflow.js \
+             bindings/wasm/pkg/gmaxflow.wasm site/
+          cp docs/algorithm-flow.svg site/
+          ls -l site
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo-site
+          path: site
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: publish to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -40,11 +40,6 @@ struct Options {
   double epsilon = 1e-12;
   // 0 selects a bound derived from the problem size.
   long long max_iterations = 0;
-  // 1 = sequential. >1 fans the label-correcting sweep out across that many
-  // threads. 0 = use the hardware concurrency. This affects only the sweeps
-  // that establish node potentials and hunt for flow-generating cycles; on a
-  // network without amplifying cycles there is exactly one such sweep.
-  int threads = 1;
   // Record the augmenting paths. Turning this off saves the step log, which is
   // the largest allocation on a big run.
   bool collect_paths = true;
@@ -122,8 +117,6 @@ struct Stats {
   long long path_searches = 0;
   long long cycle_searches = 0;
   long long relaxations = 0;
-  long long parallel_fallbacks = 0;
-  int threads_used = 1;
 
   // Which engine answered the path searches. Dijkstra needs valid node
   // potentials; a label-correcting sweep establishes or repairs them.
@@ -141,6 +134,12 @@ struct Stats {
   double path_search_seconds = 0.0;
   double cycle_search_seconds = 0.0;
   double push_seconds = 0.0;
+  // Breakdown of the potential/cycle phase, so it is clear which part of it is
+  // worth parallelising.
+  double reach_seconds = 0.0;
+  double sweep_seconds = 0.0;
+  double verify_seconds = 0.0;
+  long long sweep_rounds = 0;
 
   // Bytes held by the solver's own arrays, excluding the step log.
   std::size_t working_bytes = 0;

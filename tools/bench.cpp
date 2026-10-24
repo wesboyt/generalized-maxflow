@@ -84,13 +84,12 @@ std::size_t estimate_bytes(const gmf::Problem& problem, const gmf::Result& resul
   return bytes;
 }
 
-void run(const std::string& shape, int nodes, int degree, double max_multiplier, int threads,
+void run(const std::string& shape, int nodes, int degree, double max_multiplier,
          bool collect_paths) {
   const gmf::Problem problem = shape == "uniform"
                                    ? uniform(nodes, degree, max_multiplier, 12345)
                                    : layered(nodes, degree, max_multiplier, 12345);
   gmf::Options options;
-  options.threads = threads;
   options.collect_paths = collect_paths;
 
   const auto start = std::chrono::steady_clock::now();
@@ -102,11 +101,12 @@ void run(const std::string& shape, int nodes, int degree, double max_multiplier,
 
   std::printf(
       "%-8s n=%-7d m=%-8zu %-16s flow=%-14.6g wall=%7.3fs  path=%6.3fs cycle=%6.3fs "
-      "push=%6.3fs | iters=%-7lld paths=%-7lld cycles=%-6lld relax=%-12lld dij=%-7lld "
+      "push=%6.3fs reach=%6.3fs sweep=%6.3fs verify=%6.3fs | iters=%-7lld paths=%-7lld cycles=%-6lld relax=%-12lld dij=%-7lld "
       "lc=%-6lld scans=%-12lld steps=%-9zu work=%-5zuMB steps=%-4zuMB total=%zuMB\n",
       shape.c_str(), problem.num_nodes, problem.edges.size(), result.status.c_str(),
       result.max_flow, wall, result.stats.path_search_seconds, result.stats.cycle_search_seconds,
-      result.stats.push_seconds, result.stats.iterations, result.stats.path_searches,
+      result.stats.push_seconds, result.stats.reach_seconds, result.stats.sweep_seconds,
+      result.stats.verify_seconds, result.stats.iterations, result.stats.path_searches,
       result.stats.cycle_searches, result.stats.relaxations, result.stats.dijkstra_searches,
       result.stats.label_correcting_searches, result.stats.arc_scans, steps,
       result.stats.working_bytes / (1024 * 1024),
@@ -125,25 +125,24 @@ int main(int argc, char** argv) {
     const int nodes = std::atoi(argv[2]);
     const int degree = argc > 3 ? std::atoi(argv[3]) : 4;
     const double max_multiplier = argc > 4 ? std::atof(argv[4]) : 0.95;
-    const int threads = argc > 5 ? std::atoi(argv[5]) : 1;
-    run(shape, nodes, degree, max_multiplier, threads, true);
+    run(shape, nodes, degree, max_multiplier, true);
     return 0;
   }
 
   std::printf("== lossy networks (every multiplier below 1, no generating cycles) ==\n");
   for (const int nodes : {1000, 4000, 16000}) {
-    run("layered", nodes, 4, 0.95, 1, true);
+    run("layered", nodes, 4, 0.95, true);
   }
   for (const int nodes : {1000, 4000, 16000}) {
-    run("uniform", nodes, 4, 0.95, 1, true);
+    run("uniform", nodes, 4, 0.95, true);
   }
 
   std::printf("\n== gain-amplifying networks (multipliers straddle 1) ==\n");
   for (const int nodes : {200, 800, 3200}) {
-    run("layered", nodes, 4, 1.4, 1, true);
+    run("layered", nodes, 4, 1.4, true);
   }
   for (const int nodes : {200, 800, 3200}) {
-    run("uniform", nodes, 4, 1.4, 1, true);
+    run("uniform", nodes, 4, 1.4, true);
   }
   return 0;
 }

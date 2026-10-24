@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 760" width="980" height="760" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <title>Generalized maximum flow: finding a constriction and propagating the update</title>
+  <desc>Four panels. A network with capacities and multipliers; the highest-gain path and its constricting edge; the reverse residual arc created by the push and the node labels it invalidates; and the repaired labels with the next constriction on a different edge.</desc>
+
+  <style>
+    .bg { fill: #ffffff; }
+    .panel { fill: #f8fafc; stroke: #e2e8f0; stroke-width: 1; rx: 10; }
+    .ttl { font-size: 15px; font-weight: 650; fill: #0f172a; }
+    .sub { font-size: 11.5px; fill: #64748b; }
+    .node { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.6; }
+    .node-sel { fill: #ffffff; stroke: #0f172a; stroke-width: 2.4; }
+    .node-dirty { fill: #fff7ed; stroke: #ea580c; stroke-width: 2.2; }
+    .nlab { font-size: 13px; font-weight: 650; fill: #0f172a; text-anchor: middle; }
+    .arc { stroke: #cbd5e1; stroke-width: 2; fill: none; }
+    .arc-hot { stroke: #0f172a; stroke-width: 3.2; fill: none; }
+    .arc-cut { stroke: #dc2626; stroke-width: 3.6; fill: none; }
+    .arc-rev { stroke: #ea580c; stroke-width: 2.6; fill: none; stroke-dasharray: 6 4; }
+    .arc-done { stroke: #94a3b8; stroke-width: 2; fill: none; stroke-dasharray: 3 3; }
+    .elab { font-size: 10.5px; fill: #475569; text-anchor: middle; }
+    .elab-hot { font-size: 10.5px; fill: #0f172a; font-weight: 650; text-anchor: middle; }
+    .elab-cut { font-size: 10.5px; fill: #dc2626; font-weight: 650; text-anchor: middle; }
+    .pot { font-size: 10px; fill: #0369a1; text-anchor: middle; font-weight: 600; }
+    .pot-stale { font-size: 10px; fill: #ea580c; text-anchor: middle; font-weight: 600; }
+    .note { font-size: 11.5px; fill: #334155; }
+    .note-em { font-size: 11.5px; fill: #0f172a; font-weight: 650; }
+    .step { font-size: 11px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+    .stepbg { fill: #0f172a; }
+    .legk { font-size: 11px; fill: #475569; }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="980" height="760"/>
+
+  <defs>
+    <marker id="h-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#cbd5e1"/>
+    </marker>
+    <marker id="h-dark" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f172a"/>
+    </marker>
+    <marker id="h-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="h-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ea580c"/>
+    </marker>
+    <marker id="h-faint" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <!-- ============================= PANEL 1 ============================= -->
+  <rect class="panel" x="16" y="16" width="464" height="336"/>
+  <circle class="stepbg" cx="42" cy="44" r="11"/>
+  <text class="step" x="42" y="48">1</text>
+  <text class="ttl" x="62" y="42">The network</text>
+  <text class="sub" x="62" y="58">each edge carries capacity c and multiplier g</text>
+
+  <!-- nodes: s(70,180) a(190,110) b(190,250) t(400,180) -->
+  <g>
+    <line class="arc" x1="96" y1="172" x2="166" y2="118" marker-end="url(#h-grey)"/>
+    <text class="elab" x="124" y="133">c 10 · g 1.0</text>
+
+    <line class="arc" x1="96" y1="188" x2="166" y2="242" marker-end="url(#h-grey)"/>
+    <text class="elab" x="124" y="236">c 10 · g 1.0</text>
+
+    <line class="arc" x1="214" y1="110" x2="376" y2="170" marker-end="url(#h-grey)"/>
+    <text class="elab" x="296" y="126">c 4 · g 0.5</text>
+
+    <line class="arc" x1="214" y1="250" x2="376" y2="190" marker-end="url(#h-grey)"/>
+    <text class="elab" x="296" y="243">c 9 · g 0.6</text>
+
+    <line class="arc" x1="190" y1="134" x2="190" y2="226" marker-end="url(#h-grey)"/>
+    <text class="elab" x="190" y="184">c 5 · g 0.9</text>
+
+    <circle class="node" cx="70" cy="180" r="24"/><text class="nlab" x="70" y="185">s</text>
+    <circle class="node" cx="190" cy="110" r="24"/><text class="nlab" x="190" y="115">a</text>
+    <circle class="node" cx="190" cy="250" r="24"/><text class="nlab" x="190" y="255">b</text>
+    <circle class="node" cx="400" cy="180" r="24"/><text class="nlab" x="400" y="185">t</text>
+  </g>
+
+  <text class="note" x="36" y="300">A unit entering s→a→t arrives as 0.5; through s→b→t as 0.6.</text>
+  <text class="note" x="36" y="320">Gain is a product along the path, so the search works on</text>
+  <text class="note" x="36" y="338">−log g, where highest gain is exactly shortest distance.</text>
+
+  <!-- ============================= PANEL 2 ============================= -->
+  <rect class="panel" x="500" y="16" width="464" height="336"/>
+  <circle class="stepbg" cx="526" cy="44" r="11"/>
+  <text class="step" x="526" y="48">2</text>
+  <text class="ttl" x="546" y="42">Find the constriction</text>
+  <text class="sub" x="546" y="58">bottleneck = min over edges of residual ÷ gain-so-far</text>
+
+  <g transform="translate(484,0)">
+    <line class="arc-done" x1="96" y1="172" x2="166" y2="118" marker-end="url(#h-faint)"/>
+    <line class="arc-hot" x1="96" y1="188" x2="166" y2="242" marker-end="url(#h-dark)"/>
+    <text class="elab-hot" x="118" y="236">10 ÷ 1 = 10</text>
+
+    <line class="arc-done" x1="214" y1="110" x2="376" y2="170" marker-end="url(#h-faint)"/>
+    <line class="arc-cut" x1="214" y1="250" x2="376" y2="190" marker-end="url(#h-red)"/>
+    <text class="elab-cut" x="300" y="247">9 ÷ 1 = 9  ← least</text>
+
+    <line class="arc-done" x1="190" y1="134" x2="190" y2="226" marker-end="url(#h-faint)"/>
+
+    <circle class="node-sel" cx="70" cy="180" r="24"/><text class="nlab" x="70" y="185">s</text>
+    <circle class="node" cx="190" cy="110" r="24"/><text class="nlab" x="190" y="115">a</text>
+    <circle class="node-sel" cx="190" cy="250" r="24"/><text class="nlab" x="190" y="255">b</text>
+    <circle class="node-sel" cx="400" cy="180" r="24"/><text class="nlab" x="400" y="185">t</text>
+  </g>
+
+  <text class="note-em" x="520" y="300">s→b→t has gain 0.6, the highest available.</text>
+  <text class="note" x="520" y="320">Push 9 units: b→t fills exactly and becomes the constricting</text>
+  <text class="note" x="520" y="338">edge. 5.4 units arrive at t. Note 9, not 10 — b→t ran out first.</text>
+
+  <!-- ============================= PANEL 3 ============================= -->
+  <rect class="panel" x="16" y="368" width="464" height="336"/>
+  <circle class="stepbg" cx="42" cy="396" r="11"/>
+  <text class="step" x="42" y="400">3</text>
+  <text class="ttl" x="62" y="394">The update fans out</text>
+  <text class="sub" x="62" y="410">the push creates a reverse arc and stales the labels past it</text>
+
+  <g transform="translate(0,352)">
+    <line class="arc" x1="96" y1="172" x2="166" y2="118" marker-end="url(#h-grey)"/>
+    <line class="arc-done" x1="96" y1="188" x2="166" y2="242" marker-end="url(#h-faint)"/>
+    <text class="elab" x="112" y="238">1 left</text>
+
+    <line class="arc" x1="214" y1="110" x2="376" y2="170" marker-end="url(#h-grey)"/>
+
+    <!-- saturated forward b->t, plus its new reverse arc t->b -->
+    <path class="arc-cut" d="M 214 252 L 376 192" marker-end="url(#h-red)"/>
+    <text class="elab-cut" x="300" y="252">full</text>
+    <path class="arc-rev" d="M 374 174 C 320 150 268 198 216 234" marker-end="url(#h-orange)"/>
+    <text class="elab" x="296" y="166" fill="#ea580c">new reverse arc, g = 1/0.6</text>
+
+    <line class="arc" x1="190" y1="134" x2="190" y2="226" marker-end="url(#h-grey)"/>
+
+    <circle class="node" cx="70" cy="180" r="24"/><text class="nlab" x="70" y="185">s</text>
+    <circle class="node-dirty" cx="190" cy="110" r="24"/><text class="nlab" x="190" y="115">a</text>
+    <circle class="node-dirty" cx="190" cy="250" r="24"/><text class="nlab" x="190" y="255">b</text>
+    <circle class="node-dirty" cx="400" cy="180" r="24"/><text class="nlab" x="400" y="185">t</text>
+    <text class="pot-stale" x="190" y="86">stale</text>
+    <text class="pot-stale" x="190" y="288">stale</text>
+    <text class="pot-stale" x="400" y="156">stale</text>
+  </g>
+
+  <text class="note" x="36" y="652">Only the nodes the push touched can have broken their label</text>
+  <text class="note" x="36" y="670">constraint, so the repair is seeded from those and propagates</text>
+  <text class="note" x="36" y="688">outward until every reduced cost is non-negative again.</text>
+
+  <!-- ============================= PANEL 4 ============================= -->
+  <rect class="panel" x="500" y="368" width="464" height="336"/>
+  <circle class="stepbg" cx="526" cy="396" r="11"/>
+  <text class="step" x="526" y="400">4</text>
+  <text class="ttl" x="546" y="394">The next constriction</text>
+  <text class="sub" x="546" y="410">repaired labels, so one Dijkstra finds the new best path</text>
+
+  <g transform="translate(484,352)">
+    <line class="arc-hot" x1="96" y1="172" x2="166" y2="118" marker-end="url(#h-dark)"/>
+    <text class="elab-hot" x="120" y="131">10 ÷ 1</text>
+
+    <line class="arc-done" x1="96" y1="188" x2="166" y2="242" marker-end="url(#h-faint)"/>
+
+    <line class="arc-cut" x1="214" y1="110" x2="376" y2="170" marker-end="url(#h-red)"/>
+    <text class="elab-cut" x="300" y="124">4 ÷ 1 = 4  ← least</text>
+
+    <path class="arc-done" d="M 214 252 L 376 192" marker-end="url(#h-faint)"/>
+    <line class="arc" x1="190" y1="134" x2="190" y2="226" marker-end="url(#h-grey)"/>
+
+    <circle class="node-sel" cx="70" cy="180" r="24"/><text class="nlab" x="70" y="185">s</text>
+    <circle class="node-sel" cx="190" cy="110" r="24"/><text class="nlab" x="190" y="115">a</text>
+    <circle class="node" cx="190" cy="250" r="24"/><text class="nlab" x="190" y="255">b</text>
+    <circle class="node-sel" cx="400" cy="180" r="24"/><text class="nlab" x="400" y="185">t</text>
+    <text class="pot" x="190" y="86">repaired</text>
+    <text class="pot" x="400" y="156">repaired</text>
+  </g>
+
+  <text class="note-em" x="520" y="652">The constriction moved to a→t, a different edge.</text>
+  <text class="note" x="520" y="670">Push 4 units for 2 more at t, total 7.4. Repeat until no path</text>
+  <text class="note" x="520" y="688">and no gain-amplifying cycle remain — that is the certificate.</text>
+
+  <!-- ============================== LEGEND ============================= -->
+  <g transform="translate(16,718)">
+    <line class="arc-hot" x1="4" y1="10" x2="40" y2="10" marker-end="url(#h-dark)"/>
+    <text class="legk" x="48" y="14">chosen path</text>
+
+    <line class="arc-cut" x1="150" y1="10" x2="186" y2="10" marker-end="url(#h-red)"/>
+    <text class="legk" x="194" y="14">constricting edge</text>
+
+    <line class="arc-rev" x1="330" y1="10" x2="366" y2="10" marker-end="url(#h-orange)"/>
+    <text class="legk" x="374" y="14">reverse residual arc (g → 1/g)</text>
+
+    <circle class="node-dirty" cx="610" cy="10" r="9"/>
+    <text class="legk" x="626" y="14">label to repair</text>
+
+    <line class="arc-done" x1="740" y1="10" x2="776" y2="10" marker-end="url(#h-faint)"/>
+    <text class="legk" x="784" y="14">saturated or unused</text>
+  </g>
+</svg>

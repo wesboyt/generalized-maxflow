@@ -100,9 +100,6 @@ Options read_options(const Value& request) {
   const Value* block = request.find("options");
   const Value& scope = block != nullptr ? *block : request;
   if (const Value* value = scope.find("epsilon")) options.epsilon = value->as_number(options.epsilon);
-  if (const Value* value = scope.find("threads")) {
-    options.threads = static_cast<int>(value->as_number(options.threads));
-  }
   if (const Value* value = scope.find_any({"max_iterations", "maxIterations"})) {
     options.max_iterations =
         static_cast<long long>(value->as_number(static_cast<double>(options.max_iterations)));
@@ -280,8 +277,6 @@ Value result_to_json(const Problem& problem, const Result& result, const NodeTab
   stats.set("path_searches", Value(static_cast<double>(result.stats.path_searches)));
   stats.set("cycle_searches", Value(static_cast<double>(result.stats.cycle_searches)));
   stats.set("relaxations", Value(static_cast<double>(result.stats.relaxations)));
-  stats.set("parallel_fallbacks", Value(static_cast<double>(result.stats.parallel_fallbacks)));
-  stats.set("threads_used", Value(result.stats.threads_used));
   stats.set("dijkstra_searches", Value(static_cast<double>(result.stats.dijkstra_searches)));
   stats.set("label_correcting_searches",
             Value(static_cast<double>(result.stats.label_correcting_searches)));

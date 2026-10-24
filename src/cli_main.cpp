@@ -19,7 +19,6 @@ void print_usage() {
             << "options:\n"
             << "  -o, --output FILE   write the answer to FILE instead of stdout\n"
             << "  -c, --compact       emit one line of JSON (default is indented)\n"
-            << "      --threads N     fan the path search out across N threads (0 = all cores)\n"
             << "  -h, --help          show this message\n"
             << "  -v, --version       show the version\n\n"
             << "input:\n"
@@ -28,8 +27,7 @@ void print_usage() {
 }
 
 // Injects the CLI switches into the request so the library sees them as options.
-std::string apply_overrides(const std::string& request, bool compact, int threads,
-                            bool threads_set) {
+std::string apply_overrides(const std::string& request, bool compact) {
   gmf::json::Value document;
   try {
     document = gmf::json::parse(request);
@@ -45,7 +43,6 @@ std::string apply_overrides(const std::string& request, bool compact, int thread
   } else if (compact) {
     options.set("pretty", gmf::json::Value(false));
   }
-  if (threads_set) options.set("threads", gmf::json::Value(threads));
   document.set("options", std::move(options));
   return gmf::json::dump(document);
 }
@@ -56,8 +53,6 @@ int main(int argc, char** argv) {
   std::string input_path;
   std::string output_path;
   bool compact = false;
-  int threads = 1;
-  bool threads_set = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
@@ -79,15 +74,6 @@ int main(int argc, char** argv) {
         return 2;
       }
       output_path = argv[++i];
-      continue;
-    }
-    if (argument == "--threads") {
-      if (i + 1 >= argc) {
-        std::cerr << "gmaxflow: --threads needs a number\n";
-        return 2;
-      }
-      threads = std::atoi(argv[++i]);
-      threads_set = true;
       continue;
     }
     if (!argument.empty() && argument[0] == '-' && argument != "-") {
@@ -123,7 +109,7 @@ int main(int argc, char** argv) {
   }
 
   const std::string answer =
-      gmf::solve_json(apply_overrides(request, compact, threads, threads_set));
+      gmf::solve_json(apply_overrides(request, compact));
 
   if (output_path.empty()) {
     std::cout << answer << "\n";

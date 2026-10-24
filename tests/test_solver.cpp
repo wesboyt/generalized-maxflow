@@ -253,7 +253,7 @@ TEST(random_amplifying_networks_end_with_a_certificate) {
   }
 }
 
-TEST(the_parallel_engine_finds_the_same_maximum) {
+TEST(the_two_search_engines_find_the_same_maximum) {
   std::mt19937 engine(4242);
   for (int trial = 0; trial < 120; ++trial) {
     reference::RandomSpec spec;
@@ -263,16 +263,17 @@ TEST(the_parallel_engine_finds_the_same_maximum) {
     spec.max_multiplier = 1.0;
     const gmf::Problem problem = reference::random_problem(engine, spec);
 
+    // Dijkstra over node potentials against the label-correcting reference.
     const gmf::Result sequential = gmf::solve(problem);
-    gmf::Options parallel_options;
-    parallel_options.threads = 4;
-    const gmf::Result parallel = gmf::solve(problem, parallel_options);
+    gmf::Options reference_options;
+    reference_options.use_potentials = false;
+    const gmf::Result parallel = gmf::solve(problem, reference_options);
     CHECK_MESSAGE(sequential.optimal, "trial " + std::to_string(trial));
 
     CHECK_MESSAGE(parallel.optimal, "trial " + std::to_string(trial) + ": " + parallel.status);
     CHECK_MESSAGE(test::near(sequential.max_flow, parallel.max_flow, 1e-7),
-                  "trial " + std::to_string(trial) + ": sequential " +
-                      std::to_string(sequential.max_flow) + " vs parallel " +
+                  "trial " + std::to_string(trial) + ": dijkstra " +
+                      std::to_string(sequential.max_flow) + " vs label-correcting " +
                       std::to_string(parallel.max_flow));
   }
 }

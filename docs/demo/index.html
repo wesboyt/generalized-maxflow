@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Generalized Maximum Flow</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f8fafc; --line: #e2e8f0; --ink: #0f172a;
+    --muted: #64748b; --accent: #0f766e; --hot: #dc2626; --warm: #ea580c;
+    --code-bg: #f1f5f9; --ok: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b1220; --panel: #111a2b; --line: #1e2b43; --ink: #e8eefc;
+      --muted: #94a3b8; --accent: #2dd4bf; --hot: #f87171; --warm: #fb923c;
+      --code-bg: #0e1726; --ok: #4ade80;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b1220; --panel: #111a2b; --line: #1e2b43; --ink: #e8eefc;
+    --muted: #94a3b8; --accent: #2dd4bf; --hot: #f87171; --warm: #fb923c;
+    --code-bg: #0e1726; --ok: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: 0 0 24px; max-width: 70ch; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em;
+             color: var(--muted); margin: 0 0 12px; font-weight: 650; }
+  textarea {
+    width: 100%; min-height: 300px; resize: vertical; background: var(--code-bg);
+    color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); font-weight: 500; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .stat { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0;
+          border-bottom: 1px dashed var(--line); font-variant-numeric: tabular-nums; }
+  .stat:last-child { border-bottom: 0; }
+  .stat b { font-weight: 650; }
+  .k { color: var(--muted); }
+  .big { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 650; }
+  .pill.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+  .pill.bad { background: color-mix(in srgb, var(--hot) 18%, transparent); color: var(--hot); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .path { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .path:last-child { border-bottom: 0; }
+  .nodes { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+  .cyc { color: var(--warm); font-weight: 650; }
+  .con { color: var(--hot); }
+  .err { color: var(--hot); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; white-space: pre-wrap; }
+  .scroll { max-height: 340px; overflow: auto; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .foot { margin-top: 28px; color: var(--muted); font-size: 13px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Generalized maximum flow</h1>
+  <p class="lede">
+    Maximum flow where every edge has a <b>capacity</b> and a <b>multiplier</b>: pushing
+    <code>x</code> units in consumes <code>x</code> of capacity and delivers
+    <code>multiplier · x</code> out. The solver is C++ compiled to WebAssembly and runs
+    entirely in this page — nothing is uploaded.
+  </p>
+
+  <div class="row">
+    <button class="ghost" data-ex="grid">Power grid (losses)</button>
+    <button class="ghost" data-ex="reroute">Rerouting (needs backward flow)</button>
+    <button class="ghost" data-ex="arb">Currency arbitrage (gain cycle)</button>
+    <button class="ghost" data-ex="constrict">Constriction walkthrough</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Graph</h2>
+      <textarea id="input" spellcheck="false"></textarea>
+      <div class="row" style="margin: 12px 0 0;">
+        <button id="solve">Solve</button>
+        <span id="status" class="k"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Result</h2>
+      <div id="out"><span class="k">Pick an example or paste a graph, then press Solve.</span></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top: 20px;">
+    <h2>Filled paths, in order</h2>
+    <div id="paths" class="scroll"><span class="k">—</span></div>
+  </div>
+
+  <p class="foot">
+    Each entry is one augmentation: the flow that entered, what reached the sink, and the
+    <span class="con">constricting edge</span> that limited it. A
+    <span class="cyc">flow-generating cycle</span> is a loop whose multipliers multiply to more
+    than one — it manufactures flow, and its excess is routed to the sink.
+    <a href="https://github.com/wesboyt/generalized-maxflow">Source and documentation</a>.
+  </p>
+</div>
+
+<script type="module">
+const EXAMPLES = {
+  grid: {
+    _comment: "Transmission with line losses: what leaves the plant is not what reaches the city.",
+    source: "plant", sink: "city",
+    adjacency: {
+      plant: [{ to: "substation_north", capacity: 600, multiplier: 0.97 },
+              { to: "substation_south", capacity: 450, multiplier: 0.94 }],
+      substation_north: [{ to: "trunk", capacity: 500, multiplier: 0.98 },
+                         { to: "substation_south", capacity: 200, multiplier: 0.995 }],
+      substation_south: [{ to: "trunk", capacity: 300, multiplier: 0.96 },
+                         { to: "city", capacity: 250, multiplier: 0.9 }],
+      trunk: [{ to: "city", capacity: 700, multiplier: 0.99 }]
+    }
+  },
+  reroute: {
+    _comment: "The best first path takes the only capacity into the sink. Reaching 3 needs flow pushed BACK over a->b: look for direction 'backward'.",
+    source: "s", sink: "t",
+    edges: [
+      { from: "s", to: "a", capacity: 1, multiplier: 1.0 },
+      { from: "s", to: "b", capacity: 1, multiplier: 1.0 },
+      { from: "a", to: "t", capacity: 1, multiplier: 1.0 },
+      { from: "b", to: "t", capacity: 1, multiplier: 2.0 },
+      { from: "a", to: "b", capacity: 1, multiplier: 1.5 }
+    ]
+  },
+  arb: {
+    _comment: "Exchange rates as multipliers. The desk starts with zero capital, yet flow still reaches the sink: the rate cycle manufactures it.",
+    source: "desk", sink: "settled_usd",
+    adjacency: {
+      desk: [{ to: "usd", capacity: 0, multiplier: 1.0 }],
+      usd: [{ to: "eur", capacity: 1000, multiplier: 0.92 },
+            { to: "settled_usd", capacity: 100000, multiplier: 1.0 }],
+      eur: [{ to: "jpy", capacity: 2000, multiplier: 171.0 }],
+      jpy: [{ to: "usd", capacity: 400000, multiplier: 0.0068 }]
+    }
+  },
+  constrict: {
+    _comment: "The figure in the README. First s->b->t fills b->t exactly (9 in, 5.4 out); then the constriction moves to a->t. Total 7.4.",
+    source: "s", sink: "t",
+    edges: [
+      { from: "s", to: "a", capacity: 10, multiplier: 1.0 },
+      { from: "s", to: "b", capacity: 10, multiplier: 1.0 },
+      { from: "a", to: "t", capacity: 4, multiplier: 0.5 },
+      { from: "b", to: "t", capacity: 9, multiplier: 0.6 },
+      { from: "a", to: "b", capacity: 5, multiplier: 0.9 }
+    ]
+  }
+};
+
+const $ = (id) => document.getElementById(id);
+const input = $("input"), out = $("out"), paths = $("paths"), statusEl = $("status");
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const num = (x) => (typeof x !== "number" || !isFinite(x)) ? String(x)
+  : (Math.abs(x) >= 1e6 || (x !== 0 && Math.abs(x) < 1e-4)) ? x.toExponential(4)
+  : (Math.round(x * 1e6) / 1e6).toString();
+
+let solver = null;
+
+for (const button of document.querySelectorAll("[data-ex]")) {
+  button.addEventListener("click", () => {
+    input.value = JSON.stringify(EXAMPLES[button.dataset.ex], null, 2);
+    if (solver) run();
+  });
+}
+input.value = JSON.stringify(EXAMPLES.constrict, null, 2);
+
+function render(answer) {
+  const ok = answer.optimal;
+  out.innerHTML = `
+    <div class="big">${esc(num(answer.max_flow))}</div>
+    <div class="k" style="margin-bottom:12px">delivered at the sink</div>
+    <div class="stat"><span class="k">status</span>
+      <span class="pill ${ok ? "ok" : "bad"}">${esc(answer.status)}</span></div>
+    <div class="stat"><span class="k">injected at the source</span><b>${esc(num(answer.source_outflow))}</b></div>
+    <div class="stat"><span class="k">augmentations</span><b>${esc(answer.paths.length)}</b></div>
+    <div class="stat"><span class="k">no augmenting path left</span>
+      <b>${answer.certificate.no_augmenting_path ? "yes" : "no"}</b></div>
+    <div class="stat"><span class="k">no gain cycle reaching sink</span>
+      <b>${answer.certificate.no_generating_cycle_reaching_sink ? "yes" : "no"}</b></div>
+    <div class="stat"><span class="k">conservation error</span>
+      <b>${esc(num(answer.certificate.max_conservation_error))}</b></div>
+    ${answer.message ? `<div class="k" style="margin-top:10px">${esc(answer.message)}</div>` : ""}
+    <h2 style="margin:18px 0 8px">Edge flows</h2>
+    <div class="scroll"><table>
+      <tr><th>edge</th><th class="num">cap</th><th class="num">mult</th><th class="num">flow</th><th class="num">delivered</th></tr>
+      ${answer.edges.map((e) => `<tr>
+        <td>${esc(e.from)} → ${esc(e.to)}</td>
+        <td class="num">${esc(num(e.capacity))}</td>
+        <td class="num">${esc(num(e.multiplier))}</td>
+        <td class="num"><b>${esc(num(e.flow))}</b></td>
+        <td class="num">${esc(num(e.delivered))}</td></tr>`).join("")}
+    </table></div>`;
+
+  paths.innerHTML = answer.paths.length === 0
+    ? `<span class="k">No augmentation was possible: the sink cannot be reached.</span>`
+    : answer.paths.map((p, i) => {
+        const cycle = p.kind === "flow_generating_cycle";
+        const back = p.steps.filter((s) => s.direction === "backward").length;
+        return `<div class="path">
+          <div><b>${i + 1}.</b> ${cycle ? `<span class="cyc">flow-generating cycle</span>` : "path"}
+            — in <b>${esc(num(p.flow_in))}</b>, out <b>${esc(num(p.flow_out))}</b>,
+            gain ${esc(num(p.gain))}${cycle ? `, excess ${esc(num(p.excess))}` : ""}
+            ${back ? ` · ${back} backward step${back > 1 ? "s" : ""}` : ""}</div>
+          <div class="nodes">${p.nodes.map(esc).join(" → ")}</div>
+          ${p.bottleneck ? `<div class="con">constriction: ${esc(p.bottleneck.from)} → ${esc(p.bottleneck.to)}
+            (${esc(p.bottleneck.direction)})</div>` : ""}
+        </div>`;
+      }).join("");
+}
+
+function run() {
+  if (!solver) return;
+  try {
+    const graph = JSON.parse(input.value);
+    const started = performance.now();
+    const answer = solver.solve(graph);
+    const ms = performance.now() - started;
+    statusEl.textContent = `solved in ${ms.toFixed(1)} ms`;
+    render(answer);
+  } catch (problem) {
+    statusEl.textContent = "";
+    out.innerHTML = `<div class="err">${esc(problem.message || problem)}</div>`;
+    paths.innerHTML = `<span class="k">—</span>`;
+  }
+}
+
+$("solve").addEventListener("click", run);
+$("solve").disabled = true;
+statusEl.textContent = "loading WebAssembly…";
+
+try {
+  const module = await import("./index.mjs");
+  solver = await module.default();
+  $("solve").disabled = false;
+  statusEl.textContent = `solver ${solver.version()} ready`;
+  run();
+} catch (problem) {
+  statusEl.textContent = "";
+  out.innerHTML = `<div class="err">The WebAssembly build is not next to this page.
+
+Build it with:
+  bindings/wasm/build.sh
+then copy gmaxflow.js and gmaxflow.wasm beside index.html.
+
+(${esc(problem.message || problem)})</div>`;
+}
+</script>
+</body>
+</html>

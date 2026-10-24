@@ -107,7 +107,6 @@ def test_options_are_forwarded():
         "edges": [{"from": 0, "to": 1, "capacity": 4, "multiplier": 0.5}],
     }
     assert gmaxflow.solve(graph, collect_paths=False)["paths"] == []
-    assert gmaxflow.solve(graph, threads=2)["stats"]["threads_used"] == 2
     # The caller's graph is left alone.
     assert "options" not in graph
 

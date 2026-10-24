@@ -70,7 +70,6 @@ def solve(
     graph: Graph,
     *,
     epsilon: Optional[float] = None,
-    threads: Optional[int] = None,
     max_iterations: Optional[int] = None,
     collect_paths: Optional[bool] = None,
     cancel_generating_cycles: Optional[bool] = None,
@@ -82,9 +81,8 @@ def solve(
     an ``adjacency`` map or an ``edges`` list. Options may be passed here as
     keywords or inside the graph under ``options``; keywords win.
 
-    Set `threads` above 1 to fan the path search out across threads, or to 0 to
-    use every core. With `require_optimal`, an answer the solver could not
-    certify raises `NotOptimalError` instead of being returned.
+    With `require_optimal`, an answer the solver could not certify raises
+    `NotOptimalError` instead of being returned.
 
     Raises `InvalidGraphError` when the graph is malformed.
     """
@@ -98,7 +96,6 @@ def solve(
     options = dict(request.get("options") or {})
     overrides = {
         "epsilon": epsilon,
-        "threads": threads,
         "max_iterations": max_iterations,
         "collect_paths": collect_paths,
         "cancel_generating_cycles": cancel_generating_cycles,
