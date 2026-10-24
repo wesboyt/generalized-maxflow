@@ -104,7 +104,8 @@ Options read_options(const Value& request) {
     options.threads = static_cast<int>(value->as_number(options.threads));
   }
   if (const Value* value = scope.find_any({"max_iterations", "maxIterations"})) {
-    options.max_iterations = static_cast<int>(value->as_number(options.max_iterations));
+    options.max_iterations =
+        static_cast<long long>(value->as_number(static_cast<double>(options.max_iterations)));
   }
   if (const Value* value = scope.find_any({"collect_paths", "collectPaths"})) {
     options.collect_paths = value->as_bool(options.collect_paths);
@@ -112,6 +113,9 @@ Options read_options(const Value& request) {
   if (const Value* value =
           scope.find_any({"cancel_generating_cycles", "cancelGeneratingCycles"})) {
     options.cancel_generating_cycles = value->as_bool(options.cancel_generating_cycles);
+  }
+  if (const Value* value = scope.find_any({"use_potentials", "usePotentials"})) {
+    options.use_potentials = value->as_bool(options.use_potentials);
   }
   return options;
 }
@@ -170,19 +174,22 @@ Problem read_problem(const Value& request, NodeTable& nodes) {
   return problem;
 }
 
-Value step_to_json(const Step& step, const NodeTable& nodes) {
+// The step stores only what cannot be derived; the endpoints, the multiplier
+// and the delivered amount are recovered from the problem here.
+Value step_to_json(const Problem& problem, const Step& step, const NodeTable& nodes) {
   Value out = Value::object();
   out.set("edge", Value(step.edge));
-  out.set("from", nodes.label(step.from));
-  out.set("to", nodes.label(step.to));
+  out.set("from", nodes.label(step_from(problem, step)));
+  out.set("to", nodes.label(step_to(problem, step)));
   out.set("direction", Value(step.forward ? "forward" : "backward"));
-  out.set("multiplier", Value(step.multiplier));
+  out.set("multiplier", Value(step_multiplier(problem, step)));
   out.set("flow_in", Value(step.flow_in));
-  out.set("flow_out", Value(step.flow_out));
+  out.set("flow_out", Value(step_flow_out(problem, step)));
   return out;
 }
 
-Value augmentation_to_json(const Augmentation& augmentation, const NodeTable& nodes) {
+Value augmentation_to_json(const Problem& problem, const Result& result,
+                           const Augmentation& augmentation, const NodeTable& nodes) {
   Value out = Value::object();
   out.set("kind", Value(augmentation.kind == Augmentation::Kind::Path
                             ? "path"
@@ -195,20 +202,31 @@ Value augmentation_to_json(const Augmentation& augmentation, const NodeTable& no
     out.set("cycle_length", Value(augmentation.cycle_length));
   }
 
+  const Step* steps = result.steps.data() + augmentation.step_begin;
+  const std::size_t count = augmentation.step_count;
+
+  // The node sequence follows from the steps, so it is not stored.
   Value node_list = Value::array();
-  for (const int node : augmentation.nodes) node_list.push_back(nodes.label(node));
+  if (count > 0) {
+    node_list.push_back(nodes.label(step_from(problem, steps[0])));
+    for (std::size_t i = 0; i < count; ++i) {
+      node_list.push_back(nodes.label(step_to(problem, steps[i])));
+    }
+  }
   out.set("nodes", std::move(node_list));
 
-  Value steps = Value::array();
-  for (const Step& step : augmentation.steps) steps.push_back(step_to_json(step, nodes));
-  out.set("steps", std::move(steps));
+  Value step_list = Value::array();
+  for (std::size_t i = 0; i < count; ++i) {
+    step_list.push_back(step_to_json(problem, steps[i], nodes));
+  }
+  out.set("steps", std::move(step_list));
 
-  if (augmentation.bottleneck_step < augmentation.steps.size()) {
-    const Step& step = augmentation.steps[augmentation.bottleneck_step];
+  if (augmentation.bottleneck_step < count) {
+    const Step& step = steps[augmentation.bottleneck_step];
     Value bottleneck = Value::object();
     bottleneck.set("edge", Value(augmentation.bottleneck_edge));
-    bottleneck.set("from", nodes.label(step.from));
-    bottleneck.set("to", nodes.label(step.to));
+    bottleneck.set("from", nodes.label(step_from(problem, step)));
+    bottleneck.set("to", nodes.label(step_to(problem, step)));
     bottleneck.set("direction", Value(augmentation.bottleneck_forward ? "forward" : "backward"));
     bottleneck.set("step", Value(augmentation.bottleneck_step));
     out.set("bottleneck", std::move(bottleneck));
@@ -229,7 +247,7 @@ Value result_to_json(const Problem& problem, const Result& result, const NodeTab
 
   Value paths = Value::array();
   for (const Augmentation& augmentation : result.augmentations) {
-    paths.push_back(augmentation_to_json(augmentation, nodes));
+    paths.push_back(augmentation_to_json(problem, result, augmentation, nodes));
   }
   out.set("paths", std::move(paths));
 
@@ -264,6 +282,19 @@ Value result_to_json(const Problem& problem, const Result& result, const NodeTab
   stats.set("relaxations", Value(static_cast<double>(result.stats.relaxations)));
   stats.set("parallel_fallbacks", Value(static_cast<double>(result.stats.parallel_fallbacks)));
   stats.set("threads_used", Value(result.stats.threads_used));
+  stats.set("dijkstra_searches", Value(static_cast<double>(result.stats.dijkstra_searches)));
+  stats.set("label_correcting_searches",
+            Value(static_cast<double>(result.stats.label_correcting_searches)));
+  stats.set("heap_pops", Value(static_cast<double>(result.stats.heap_pops)));
+  stats.set("seconds", Value(result.stats.seconds));
+  stats.set("path_search_seconds", Value(result.stats.path_search_seconds));
+  stats.set("cycle_search_seconds", Value(result.stats.cycle_search_seconds));
+  stats.set("push_seconds", Value(result.stats.push_seconds));
+  stats.set("potential_repairs", Value(static_cast<double>(result.stats.potential_repairs)));
+  stats.set("working_bytes", Value(static_cast<double>(result.stats.working_bytes)));
+  stats.set("blocked_arcs", Value(static_cast<double>(result.stats.blocked_arcs)));
+  stats.set("cycle_extract_failures",
+            Value(static_cast<double>(result.stats.cycle_extract_failures)));
   out.set("stats", std::move(stats));
 
   out.set("version", Value(version()));

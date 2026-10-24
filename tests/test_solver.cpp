@@ -83,10 +83,8 @@ TEST(a_crossing_edge_forces_flow_to_be_pushed_back) {
   CHECK_NEAR(result.augmentations[0].gain, 3.0, 1e-9);
 
   bool used_a_reverse_step = false;
-  for (const gmf::Augmentation& augmentation : result.augmentations) {
-    for (const gmf::Step& step : augmentation.steps) {
-      if (!step.forward) used_a_reverse_step = true;
-    }
+  for (const gmf::Step& step : result.steps) {
+    if (!step.forward) used_a_reverse_step = true;
   }
   CHECK(used_a_reverse_step);
 
@@ -269,6 +267,7 @@ TEST(the_parallel_engine_finds_the_same_maximum) {
     gmf::Options parallel_options;
     parallel_options.threads = 4;
     const gmf::Result parallel = gmf::solve(problem, parallel_options);
+    CHECK_MESSAGE(sequential.optimal, "trial " + std::to_string(trial));
 
     CHECK_MESSAGE(parallel.optimal, "trial " + std::to_string(trial) + ": " + parallel.status);
     CHECK_MESSAGE(test::near(sequential.max_flow, parallel.max_flow, 1e-7),
@@ -300,15 +299,19 @@ TEST(the_reported_steps_follow_the_chain_rule) {
   CHECK(result.augmentations.size() == 1);
 
   const gmf::Augmentation& augmentation = result.augmentations[0];
-  CHECK(augmentation.steps.size() == 3);
+  CHECK(augmentation.step_count == 3);
   CHECK_NEAR(augmentation.flow_in, 8.0, 1e-9);
   double carried = augmentation.flow_in;
-  for (const gmf::Step& step : augmentation.steps) {
+  for (std::size_t i = 0; i < augmentation.step_count; ++i) {
+    const gmf::Step& step = result.steps[augmentation.step_begin + i];
     CHECK_NEAR(step.flow_in, carried, 1e-9);
-    CHECK_NEAR(step.flow_out, carried * step.multiplier, 1e-9);
-    carried = step.flow_out;
+    CHECK_NEAR(gmf::step_flow_out(problem, step), carried * gmf::step_multiplier(problem, step),
+               1e-9);
+    carried = gmf::step_flow_out(problem, step);
   }
   CHECK_NEAR(carried, augmentation.flow_out, 1e-9);
   CHECK_NEAR(augmentation.gain, 0.125, 1e-9);
-  CHECK(augmentation.nodes.size() == 4);
+  // The node sequence follows from the steps rather than being stored.
+  CHECK(gmf::step_from(problem, result.steps[augmentation.step_begin]) == 0);
+  CHECK(gmf::step_to(problem, result.steps[augmentation.step_begin + 2]) == 3);
 }

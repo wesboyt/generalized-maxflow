@@ -174,6 +174,10 @@ def main() -> int:
         help="above 1.0 the instances can contain flow-generating cycles",
     )
     parser.add_argument("--tolerance", type=float, default=1e-6)
+    parser.add_argument(
+        "--dump",
+        help="write each mismatching instance to this file, one JSON object per line",
+    )
     arguments = parser.parse_args()
 
     if arguments.graph:
@@ -210,7 +214,11 @@ def main() -> int:
         if abs(actual - expected) > arguments.tolerance * scale:
             mismatches += 1
             print(f"trial {trial}: solver {actual!r} vs LP {expected!r} ({answer['status']})")
-            print(json.dumps(graph))
+            if arguments.dump:
+                with open(arguments.dump, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(graph) + "\n")
+            else:
+                print(json.dumps(graph))
             if mismatches >= 5:
                 break
         if not answer["optimal"]:
