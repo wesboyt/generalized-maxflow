@@ -152,3 +152,70 @@ TEST(a_long_lossy_chain_keeps_its_precision) {
   CHECK(answer.find("status")->as_string() == "optimal");
   CHECK_NEAR(answer.find("max_flow")->as_number(), 1.0 / 1125899906842624.0, 1e-12);
 }
+
+TEST(cancellation_stalled_on_a_cycle_sharing_an_edge_with_its_route) {
+  // The cycle here runs over one edge backwards while the route carrying its
+  // excess runs over the same edge forwards. Charging both directions against
+  // that edge separately made every augmentation a fraction of what the edge
+  // allowed: the solver repeated the same cycle and route with x shrinking by
+  // about a tenth each time, and after 500000 iterations it had moved the flow
+  // by 3e-6 and was still 12% short. Netting the two directions per edge
+  // settles it in sixteen iterations.
+  check_optimum(R"({"source": 0, "sink": 19, "edges": [
+    {"from": 16, "to": 7, "capacity": 7.0, "multiplier": 1.473},
+    {"from": 17, "to": 8, "capacity": 5.0, "multiplier": 1.009},
+    {"from": 18, "to": 0, "capacity": 10.0, "multiplier": 1.016},
+    {"from": 8, "to": 6, "capacity": 7.0, "multiplier": 0.339},
+    {"from": 15, "to": 5, "capacity": 2.0, "multiplier": 1.029},
+    {"from": 18, "to": 3, "capacity": 2.0, "multiplier": 1.092},
+    {"from": 5, "to": 14, "capacity": 8.0, "multiplier": 0.944},
+    {"from": 9, "to": 17, "capacity": 10.0, "multiplier": 1.494},
+    {"from": 17, "to": 1, "capacity": 3.0, "multiplier": 1.36},
+    {"from": 4, "to": 10, "capacity": 9.0, "multiplier": 0.32},
+    {"from": 13, "to": 5, "capacity": 9.0, "multiplier": 0.705},
+    {"from": 3, "to": 6, "capacity": 3.0, "multiplier": 0.771},
+    {"from": 4, "to": 10, "capacity": 3.0, "multiplier": 0.433},
+    {"from": 1, "to": 2, "capacity": 6.0, "multiplier": 0.433},
+    {"from": 9, "to": 1, "capacity": 4.0, "multiplier": 1.311},
+    {"from": 17, "to": 7, "capacity": 6.0, "multiplier": 0.331},
+    {"from": 12, "to": 15, "capacity": 7.0, "multiplier": 1.41},
+    {"from": 5, "to": 3, "capacity": 6.0, "multiplier": 1.359},
+    {"from": 5, "to": 19, "capacity": 1.0, "multiplier": 1.376},
+    {"from": 4, "to": 15, "capacity": 3.0, "multiplier": 0.842},
+    {"from": 14, "to": 11, "capacity": 3.0, "multiplier": 1.446},
+    {"from": 5, "to": 1, "capacity": 10.0, "multiplier": 0.381},
+    {"from": 7, "to": 13, "capacity": 1.0, "multiplier": 0.378},
+    {"from": 13, "to": 17, "capacity": 3.0, "multiplier": 0.528},
+    {"from": 12, "to": 5, "capacity": 1.0, "multiplier": 1.17},
+    {"from": 16, "to": 5, "capacity": 9.0, "multiplier": 1.193},
+    {"from": 1, "to": 5, "capacity": 3.0, "multiplier": 0.35},
+    {"from": 8, "to": 9, "capacity": 1.0, "multiplier": 1.048},
+    {"from": 9, "to": 17, "capacity": 10.0, "multiplier": 0.216},
+    {"from": 14, "to": 18, "capacity": 5.0, "multiplier": 0.798},
+    {"from": 13, "to": 2, "capacity": 1.0, "multiplier": 0.207},
+    {"from": 18, "to": 13, "capacity": 9.0, "multiplier": 0.814},
+    {"from": 16, "to": 19, "capacity": 9.0, "multiplier": 0.963},
+    {"from": 15, "to": 8, "capacity": 6.0, "multiplier": 0.432},
+    {"from": 7, "to": 12, "capacity": 10.0, "multiplier": 0.729},
+    {"from": 1, "to": 13, "capacity": 6.0, "multiplier": 0.228},
+    {"from": 11, "to": 18, "capacity": 9.0, "multiplier": 1.17},
+    {"from": 5, "to": 7, "capacity": 1.0, "multiplier": 0.274},
+    {"from": 6, "to": 0, "capacity": 2.0, "multiplier": 0.22},
+    {"from": 3, "to": 15, "capacity": 6.0, "multiplier": 0.399},
+    {"from": 1, "to": 18, "capacity": 8.0, "multiplier": 1.025},
+    {"from": 11, "to": 3, "capacity": 3.0, "multiplier": 1.068},
+    {"from": 4, "to": 7, "capacity": 2.0, "multiplier": 1.259},
+    {"from": 15, "to": 19, "capacity": 8.0, "multiplier": 0.223},
+    {"from": 3, "to": 0, "capacity": 8.0, "multiplier": 0.805},
+    {"from": 12, "to": 10, "capacity": 1.0, "multiplier": 1.363},
+    {"from": 6, "to": 16, "capacity": 4.0, "multiplier": 1.264},
+    {"from": 14, "to": 11, "capacity": 7.0, "multiplier": 1.462},
+    {"from": 19, "to": 0, "capacity": 2.0, "multiplier": 1.199},
+    {"from": 11, "to": 15, "capacity": 2.0, "multiplier": 0.962},
+    {"from": 11, "to": 2, "capacity": 8.0, "multiplier": 0.961},
+    {"from": 14, "to": 16, "capacity": 4.0, "multiplier": 0.282},
+    {"from": 15, "to": 3, "capacity": 6.0, "multiplier": 0.858},
+    {"from": 16, "to": 5, "capacity": 1.0, "multiplier": 0.272},
+    {"from": 16, "to": 2, "capacity": 4.0, "multiplier": 1.076}]})",
+                2.8287877615910895);
+}

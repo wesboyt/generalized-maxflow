@@ -204,6 +204,7 @@ class Solver {
     visit_count_.assign(static_cast<std::size_t>(num_nodes_), 0);
     stamp_at_.assign(static_cast<std::size_t>(num_nodes_), 0);
     arc_coefficient_.assign(arcs_.size(), 0.0);
+    arc_delta_.assign(arcs_.size(), 0.0);
 
 #if GMF_ENABLE_THREADS
     thread_count_ = options_.threads;
@@ -555,43 +556,87 @@ class Solver {
 
   struct Bottleneck {
     double amount = 0.0;
-    std::size_t index = 0;
+    int arc = -1;  // the limiting residual arc
     bool unbounded = false;
   };
 
-  // The constricting arc: the one that runs out first when x units enter the
-  // head of the walk. `coefficient[i]` is how many units enter walk[i] per unit
-  // of x, which is the running product of the multipliers ahead of it. An arc
-  // appearing twice draws on its residual capacity twice, so the coefficients of
-  // all its appearances are summed before dividing.
+  // The distinct input edges a walk touches.
+  void collect_edges(const std::vector<int>& walk) {
+    scratch_edges_.clear();
+    scratch_edges_.reserve(walk.size());
+    for (const int arc : walk) scratch_edges_.push_back(arc >> 1);
+    std::sort(scratch_edges_.begin(), scratch_edges_.end());
+    scratch_edges_.erase(std::unique(scratch_edges_.begin(), scratch_edges_.end()),
+                         scratch_edges_.end());
+  }
+
+  // The constriction: what runs out first when x units enter the head of the
+  // walk. `coefficient[i]` is how many units enter walk[i] per unit of x, which
+  // is the running product of the multipliers ahead of it.
+  //
+  // The limit is computed per input edge on the NET change to its flow, not per
+  // arc. A walk may use an edge in both directions -- a cycle running one way
+  // and the route carrying its excess running the other -- and those two uses
+  // cancel rather than compete, because pushing into the backward arc hands
+  // capacity back to the forward one. Charging each direction separately is
+  // feasible but far too pessimistic: it shrinks every augmentation to a
+  // fraction of what the edge allows, and the cancellation loop then creeps
+  // toward the optimum geometrically instead of saturating something and
+  // finishing.
   Bottleneck bottleneck_of(const std::vector<int>& walk,
                            const std::vector<double>& coefficient) {
+    collect_edges(walk);
     for (std::size_t i = 0; i < walk.size(); ++i) {
       arc_coefficient_[static_cast<std::size_t>(walk[i])] += coefficient[i];
     }
+
     Bottleneck result;
     result.amount = kPosInf;
     result.unbounded = true;
-    for (std::size_t i = 0; i < walk.size(); ++i) {
-      const double total = arc_coefficient_[static_cast<std::size_t>(walk[i])];
-      const double residual = arc_at(walk[i]).residual;
-      if (total <= 0.0 || !std::isfinite(residual)) continue;
-      const double limit = residual / total;
+    for (const int edge : scratch_edges_) {
+      const int forward = edge * 2;
+      const double gain = arc_at(forward).gain;
+      const double entering = arc_coefficient_[static_cast<std::size_t>(forward)];
+      const double retracted = arc_coefficient_[static_cast<std::size_t>(forward + 1)];
+      // Units of this edge's flow added per unit of x. Pushing `retracted * x`
+      // into the backward arc removes `retracted * x / gain` units of flow.
+      const double net = entering - retracted / gain;
+
+      double limit;
+      int limiting;
+      if (net > 0.0) {
+        const double residual = arc_at(forward).residual;
+        if (!std::isfinite(residual)) continue;  // Uncapacitated: no limit here.
+        limit = residual / net;
+        limiting = forward;
+      } else if (net < 0.0) {
+        // The edge's flow goes down, and it cannot go below zero. The backward
+        // residual is gain * flow, so the flow itself is residual / gain.
+        limit = arc_at(forward + 1).residual / (-net * gain);
+        limiting = forward + 1;
+      } else {
+        continue;  // The two directions cancel exactly.
+      }
       if (limit < result.amount) {
         result.amount = limit;
-        result.index = i;
+        result.arc = limiting;
         result.unbounded = false;
       }
     }
-    for (const int arc : walk) arc_coefficient_[static_cast<std::size_t>(arc)] = 0.0;
+
+    for (const int edge : scratch_edges_) {
+      arc_coefficient_[static_cast<std::size_t>(edge * 2)] = 0.0;
+      arc_coefficient_[static_cast<std::size_t>(edge * 2 + 1)] = 0.0;
+    }
     return result;
   }
 
-  void push_arc(int arc, double amount, Augmentation* record) {
-    Arc& forward = arc_at(arc);
-    Arc& reverse = arc_at(arc ^ 1);
-    const double delivered = amount * forward.gain;
-
+  // Records one arc traversal and books the amount it carries, without touching
+  // the residuals: a walk that uses an edge both ways would pass through an
+  // infeasible intermediate state if each traversal were applied as it came, so
+  // the amounts are accumulated and the net is applied once per edge afterwards.
+  void record_push(int arc, double amount, Augmentation* record) {
+    const Arc& forward = arc_at(arc);
     if (record != nullptr) {
       Step step;
       step.edge = arc >> 1;
@@ -599,22 +644,23 @@ class Solver {
       step.to = forward.to;
       step.forward = (arc & 1) == 0;
       step.flow_in = amount;
-      step.flow_out = delivered;
+      step.flow_out = amount * forward.gain;
       step.multiplier = forward.gain;
       record->steps.push_back(step);
     }
+    arc_delta_[static_cast<std::size_t>(arc)] += amount;
+  }
 
-    forward.residual -= amount;
-    reverse.residual += delivered;
-    if (forward.residual < 0.0 && forward.residual > -capacity_epsilon_) forward.residual = 0.0;
-
-    // Flow is tracked per input edge rather than derived from the residual, so
-    // that infinite capacities stay well defined.
-    if ((arc & 1) == 0) {
-      edge_flow_[static_cast<std::size_t>(arc >> 1)] += amount;
-    } else {
-      edge_flow_[static_cast<std::size_t>(arc >> 1)] -= delivered;
-    }
+  // Flow is tracked per input edge rather than derived from a residual, so that
+  // infinite capacities stay well defined; both residuals follow from it.
+  void set_edge_flow(int edge, double flow) {
+    const double capacity = problem_.edges[static_cast<std::size_t>(edge)].capacity;
+    if (flow < 0.0 && flow > -capacity_epsilon_) flow = 0.0;
+    if (flow > capacity && flow < capacity + capacity_epsilon_) flow = capacity;
+    edge_flow_[static_cast<std::size_t>(edge)] = flow;
+    const int forward = edge * 2;
+    arc_at(forward).residual = std::isfinite(capacity) ? capacity - flow : capacity;
+    arc_at(forward + 1).residual = flow * arc_at(forward).gain;
   }
 
   // Pushes along a walk. `cycle_length > 0` means the first `cycle_length` arcs
@@ -638,9 +684,9 @@ class Solver {
     const Bottleneck limit = bottleneck_of(walk, coefficient);
     if (limit.unbounded) return PushOutcome::Unbounded;
     if (!(limit.amount > 0.0)) {
-      // Nothing can move through the constricting arc; retire it so the search
-      // stops rediscovering the same walk.
-      arc_at(walk[limit.index]).blocked = true;
+      // Nothing can move through the constriction; retire it so the search stops
+      // rediscovering the same walk.
+      arc_at(limit.arc).blocked = true;
       ++blocked_arcs_;
       return PushOutcome::Blocked;
     }
@@ -651,11 +697,10 @@ class Solver {
     augmentation.flow_in = limit.amount;
     augmentation.cycle_length = cycle_length;
     Augmentation* record = options_.collect_paths ? &augmentation : nullptr;
-    const double constriction_before = arc_at(walk[limit.index]).residual;
 
     double carried = limit.amount;
     for (std::size_t i = 0; i < cycle_length; ++i) {
-      push_arc(walk[i], carried, record);
+      record_push(walk[i], carried, record);
       carried *= arc_at(walk[i]).gain;
     }
     if (cycle_length > 0) {
@@ -663,23 +708,32 @@ class Solver {
       carried = augmentation.excess;
     }
     for (std::size_t i = cycle_length; i < walk.size(); ++i) {
-      push_arc(walk[i], carried, record);
+      record_push(walk[i], carried, record);
       carried *= arc_at(walk[i]).gain;
+    }
+
+    // Apply the net change to each edge the walk touched.
+    collect_edges(walk);
+    for (const int edge : scratch_edges_) {
+      const std::size_t forward = static_cast<std::size_t>(edge) * 2;
+      const double delta =
+          arc_delta_[forward] - arc_delta_[forward + 1] * arc_at(static_cast<int>(forward + 1)).gain;
+      arc_delta_[forward] = 0.0;
+      arc_delta_[forward + 1] = 0.0;
+      set_edge_flow(edge, edge_flow_[static_cast<std::size_t>(edge)] + delta);
     }
 
     augmentation.flow_out = carried;
     augmentation.gain = carried / limit.amount;
-    augmentation.bottleneck_edge = walk[limit.index] >> 1;
-    augmentation.bottleneck_forward = (walk[limit.index] & 1) == 0;
-    augmentation.bottleneck_step = limit.index;
-
-    // Normally this push drives the constricting arc to zero residual, which is
-    // what makes the next search see a different network. A walk that uses both
-    // directions of one edge, or the same arc twice, can hand that capacity
-    // straight back -- that is legitimate, and the delivered flow still went up,
-    // so nothing is retired here. Termination rests on the iteration limit,
-    // which is reported rather than hidden.
-    (void)constriction_before;
+    augmentation.bottleneck_edge = limit.arc >> 1;
+    augmentation.bottleneck_forward = (limit.arc & 1) == 0;
+    augmentation.bottleneck_step = 0;
+    for (std::size_t i = 0; i < walk.size(); ++i) {
+      if (walk[i] == limit.arc) {
+        augmentation.bottleneck_step = i;
+        break;
+      }
+    }
 
     if (options_.collect_paths) {
       augmentation.nodes = walk_nodes(walk);
@@ -800,6 +854,8 @@ class Solver {
   std::vector<std::vector<int>> in_;
   std::vector<double> edge_flow_;
   std::vector<double> arc_coefficient_;
+  std::vector<double> arc_delta_;
+  std::vector<int> scratch_edges_;
 
   std::vector<double> label_;
   std::vector<int> parent_;

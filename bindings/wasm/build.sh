@@ -18,7 +18,20 @@ if ! command -v emcmake >/dev/null 2>&1; then
   exit 1
 fi
 
-emcmake cmake -S "$root" -B "$build_dir" \
+# On Windows the default CMake generator is Visual Studio, which cannot drive
+# the Emscripten toolchain, so name a makefile generator explicitly there.
+generator=()
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*)
+    if command -v ninja >/dev/null 2>&1; then
+      generator=(-G Ninja)
+    else
+      generator=(-G "MinGW Makefiles")
+    fi
+    ;;
+esac
+
+emcmake cmake -S "$root" -B "$build_dir" "${generator[@]}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DGMF_BUILD_TESTS=OFF \
   -DGMF_BUILD_CLI=OFF \

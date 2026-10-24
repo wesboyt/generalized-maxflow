@@ -211,8 +211,11 @@ code, including this one:
 - Networks whose multipliers are all 1 are compared against an independent
   Dinic maximum flow implementation; 300 random instances per run.
 - `tools/lp_check.py` states the problem as a linear program and solves it with
-  scipy's HiGHS, which shares no code with the solver. 1450 random instances
-  across lossy and amplifying regimes, up to 30 nodes, agree to 1e-6.
+  scipy's HiGHS, which shares no code with the solver. 2570 random instances
+  across lossy and amplifying regimes, up to 80 nodes, agree to 1e-6. This is
+  what caught every defect listed in `tests/test_regression.cpp`, including one
+  that only showed up on a single 40-node graph after thousands of smaller
+  instances had passed.
 - `tools/gap_probe.py` rebuilds the residual network from a reported answer in
   Python and independently looks for the two things the certificate claims are
   absent.

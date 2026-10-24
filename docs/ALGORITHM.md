@@ -112,11 +112,44 @@ excess it produces to the sink. The two halves share one bottleneck computation:
 with `x` units entering the first cycle arc and a cycle gain of `G`, the cycle
 produces `x * (G - 1)` units of excess, so an arc on the routing path carries
 `(G - 1) * (product of multipliers before it) * x`. Collecting a coefficient per
-arc — summed when an arc appears more than once in the walk — and dividing each
-arc's residual by its coefficient gives one `x` that satisfies every constraint
-at once. That matters: compute the two bottlenecks separately and the excess can
-exceed what the route can carry, which would leave flow stranded and break
-conservation.
+arc and solving for a single `x` satisfies every constraint at once. That
+matters: compute the two bottlenecks separately and the excess can exceed what
+the route can carry, which would leave flow stranded and break conservation.
+
+### Netting the two directions of an edge
+
+A cycle and the route carrying its excess can use the *same edge in opposite
+directions*. Those two uses do not compete for that edge's capacity — they
+cancel, because pushing into the backward arc hands capacity back to the forward
+one. So the limit has to be computed per input edge, on the net change to its
+flow. With `a` the total coefficient on the forward arc, `b` the total on the
+backward arc, `g` the multiplier, `r_f = c - f` and `r_b = g * f`:
+
+```
+net = a - b / g            units of flow this edge gains per unit of x
+net > 0:   x <= r_f / net
+net < 0:   x <= r_b / (-net * g)      the flow cannot go below zero
+net == 0:  this edge does not constrain x at all
+```
+
+Charging each direction separately is *feasible* — it only ever understates what
+an edge allows — which is exactly why the error is easy to miss. It produced a
+solver that answered "optimal" on thousands of instances and then, on one
+40-node graph, repeated a single cycle and route forever with `x` shrinking by a
+tenth each time: 500,000 iterations moved the delivered flow by 3e-6 and left it
+12% short of the optimum. With the netting rule the same instance finishes in
+sixteen iterations, exactly on the linear program's value. It is in
+`tests/test_regression.cpp`.
+
+Because an edge may be used both ways, the traversals cannot be applied to the
+residuals one at a time as the walk is followed: the forward push alone can
+exceed the forward residual, with the later backward push making it feasible
+again. The amounts are therefore accumulated per arc and the net is applied once
+per edge, so no intermediate state is ever infeasible. A consequence worth
+knowing when reading the output: the `flow_in` and `flow_out` on each step are
+what physically moves along that walk, and on a shared edge those amounts partly
+cancel, so the change in that edge's reported `flow` is smaller than the step
+suggests.
 
 The cycle is found with Bellman-Ford over `-log g`, where a flow-generating
 cycle is a negative cycle. Two details are easy to get wrong, and both were
