@@ -1,6 +1,6 @@
 {
   "name": "generalized-maxflow",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Generalized maximum flow: maximum flow with per-edge gain multipliers, compiled to WebAssembly",
   "type": "module",
   "main": "./index.mjs",

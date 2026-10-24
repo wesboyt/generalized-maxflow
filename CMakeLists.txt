@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 
 project(generalized-maxflow
-  VERSION 0.1.0
+  VERSION 0.3.0
   DESCRIPTION "Generalized maximum flow: maximum flow with per-edge gain multipliers"
   LANGUAGES CXX)
 
@@ -27,12 +27,27 @@ option(GMF_BUILD_CLI "Build the gmaxflow command line tool" ON)
 option(GMF_BUILD_TESTS "Build the test suite" ON)
 option(GMF_BUILD_BENCH "Build the benchmark harness" ON)
 if(DEFINED SKBUILD)
-  set(GMF_PYTHON_DEFAULT ON)
+  set(GMF_SHARED_DEFAULT ON)
 else()
-  set(GMF_PYTHON_DEFAULT OFF)
+  set(GMF_SHARED_DEFAULT OFF)
 endif()
-option(GMF_BUILD_PYTHON "Build the CPython extension module" ${GMF_PYTHON_DEFAULT})
+# The shared library with a plain C ABI that the Python package loads through
+# ctypes. It never links libpython, which is what lets one wheel per OS and CPU
+# (tagged py3-none-<platform>) serve every Python version.
+option(GMF_BUILD_SHARED "Build the gmaxflow_core shared library (C ABI)" ${GMF_SHARED_DEFAULT})
 option(GMF_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+
+if(GMF_BUILD_SHARED)
+  # Everything ends up inside one shared library, so keep the core's C++
+  # symbols out of its export table: only the gmf_* C functions are public.
+  set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+  set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+  if(MSVC)
+    # Static CRT: the DLL then depends only on system DLLs, so it loads on a
+    # machine without the Visual C++ redistributable installed.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  endif()
+endif()
 
 # Emscripten compiles with exceptions disabled by default, which turns a throw
 # into a module-level abort. The JSON front door reports a malformed graph by
@@ -87,15 +102,31 @@ if(GMF_BUILD_BENCH AND NOT EMSCRIPTEN)
   target_link_libraries(gmf_bench PRIVATE gmf_core)
 endif()
 
-if(GMF_BUILD_PYTHON)
-  find_package(Python 3.8 REQUIRED COMPONENTS Interpreter Development.Module)
-  python_add_library(_gmaxflow MODULE bindings/python/module.cpp WITH_SOABI)
-  target_link_libraries(_gmaxflow PRIVATE gmf_core)
-  install(TARGETS _gmaxflow DESTINATION gmaxflow)
+if(GMF_BUILD_SHARED AND NOT EMSCRIPTEN)
+  add_library(gmaxflow_core SHARED bindings/c/capi.cpp)
+  target_link_libraries(gmaxflow_core PRIVATE gmf_core)
+  # One fixed name on every platform, with no "lib" prefix, so ctypes looks
+  # for gmaxflow_core.{dll,so,dylib}.
+  set_target_properties(gmaxflow_core PROPERTIES PREFIX "")
+  if(APPLE)
+    set_target_properties(gmaxflow_core PROPERTIES SUFFIX ".dylib")
+  endif()
+  if(MINGW)
+    # MinGW's C++ runtime and winpthread are not on a user's PATH.
+    target_link_options(gmaxflow_core PRIVATE -static)
+  endif()
+  # Linux links libstdc++ dynamically; the manylinux and musllinux images keep
+  # the wheel within the libstdc++ every supported distribution ships.
+  #
+  # scikit-build-core installs relative to the wheel's platlib root. Only the
+  # library itself: on Windows the import .lib is not wanted in a wheel.
+  install(TARGETS gmaxflow_core
+    LIBRARY DESTINATION gmaxflow/_native
+    RUNTIME DESTINATION gmaxflow/_native)
 endif()
 
 if(EMSCRIPTEN)
-  add_executable(gmaxflow_wasm bindings/wasm/wasm_bindings.cpp)
+  add_executable(gmaxflow_wasm bindings/c/capi.cpp)
   target_link_libraries(gmaxflow_wasm PRIVATE gmf_core)
   set_target_properties(gmaxflow_wasm PROPERTIES OUTPUT_NAME "gmaxflow")
   target_link_options(gmaxflow_wasm PRIVATE
@@ -103,14 +134,14 @@ if(EMSCRIPTEN)
     "-sEXPORT_ES6=1"
     "-sEXPORT_NAME=createGmaxflow"
     "-sALLOW_MEMORY_GROWTH=1"
-    "-sEXPORTED_FUNCTIONS=['_gmf_solve_json','_gmf_free','_gmf_version','_malloc','_free']"
+    "-sEXPORTED_FUNCTIONS=['_gmf_solve_json','_gmf_solve_json_n','_gmf_free','_gmf_version','_malloc','_free']"
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
     "-sENVIRONMENT=web,worker,node"
     "--no-entry")
 endif()
 
-# A Python wheel holds only the extension module; the library and its headers
-# are for an ordinary install.
+# A Python wheel holds only the shared library; the static library and its
+# headers are for an ordinary install.
 if(NOT SKBUILD)
   include(GNUInstallDirs)
   install(TARGETS gmf_core ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

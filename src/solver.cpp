@@ -162,7 +162,27 @@ class Solver {
     bool hit_limit = false;
     int stalled_scans = 0;
 
-    while (true) {
+    // Tardos-Wayne Rounded Fat-Path. In the paper it closes the gap to the
+    // optimum in O(log(n/xi)) Delta-phases of at most n + 2m augmentations
+    // each; here it leaves the loop below only the rounding error to remove.
+    // The label-correcting reference engine skips it, so the two engines stay
+    // independent.
+    if (options_.fat_path && options_.use_potentials) {
+      Timer scaling(result.stats.scaling_seconds);
+      run_fat_path(result, max_iterations, unbounded, hit_limit);
+      // The rounding error the phases leave is a set of slightly generating
+      // cycles through arcs the potentials still almost certify, which is
+      // exactly what the Dijkstra-based half of CancelCycles is for.
+      if (routes_certified_ && !unbounded && !hit_limit) {
+        const CancelOutcome outcome = cancel_violations(result, max_iterations);
+        unbounded = outcome == CancelOutcome::Unbounded;
+        hit_limit = outcome == CancelOutcome::Limit;
+      }
+    }
+
+    // The exact finish: Onaga's highest-gain augmentation on the true gains,
+    // cancelling whatever flow-generating cycles the rounding left behind.
+    while (!unbounded && !hit_limit) {
       if (result.stats.iterations >= max_iterations) {
         hit_limit = true;
         break;
@@ -180,6 +200,7 @@ class Solver {
           // The sweep found a gain-amplifying cycle instead.
           if (!options_.cancel_generating_cycles) break;
           ++result.stats.iterations;
+          ++result.stats.cycles_cancelled;
           const PushOutcome outcome = cancel_and_route(cycle_buffer_, result);
           if (outcome == PushOutcome::Unbounded) {
             unbounded = true;
@@ -215,6 +236,318 @@ class Solver {
 
  private:
   enum class PushOutcome { Pushed, Blocked, Unbounded };
+  enum class CancelOutcome { Lossy, Rejected, Unbounded, Limit, Stalled };
+
+  // ---- Fat-Path with gain-scaling ------------------------------------------
+  //
+  // Tardos and Wayne, "Simple generalized maximum flow algorithms", IPCO 1998,
+  // section 6, algorithm RFP:
+  //
+  //   round the gains to powers of b = (1 + xi)^(1/n)
+  //   Delta <- an upper bound on OPT - |h|
+  //   repeat
+  //     CancelCycles             -- the residual network becomes lossy
+  //     FatAugmentations(Delta / 2m)
+  //     Delta <- Delta / 2
+  //   until Delta is small
+  //
+  // FatAugmentations repeatedly augments along a highest-gain path among the
+  // delta-fat ones: paths every arc of which can carry enough to raise the
+  // sink's excess by delta. Measured in sink units through labels mu, an arc
+  // (v, w) is fat when r(v, w) / mu(v) >= delta. With node potentials pi the
+  // labels are mu(v) = exp(pi(t) - pi(v)): reduced costs non-negative make
+  // exp(pi(v) - pi(t)) an upper bound on the gain of every v -> t path, and
+  // the bound is exact along the tree the last search built.
+  //
+  // Rounding a gain down to a power of b is rounding its cost -log(gain) up to
+  // a multiple of q = log b. In a lossy network relabelled by pi the costs are
+  // the reduced costs, so the rounded network H is Dijkstra on integer keys
+  // ceil(c_pi / q) -- and a search on those keys leaves every reduced cost
+  // above -q, which is exactly the tolerance the next search needs. So the
+  // phases maintain q-optimal rather than exact potentials, CancelCycles only
+  // has to remove the cycles that gain more than q in total, and both
+  // tolerances shrink with Delta through xi = Delta / Delta_0.
+  //
+  // Two departures from the paper, both forced by reporting a conserving flow
+  // rather than one with excesses:
+  //
+  //  - The flow lives in the original network, not in H. A path chosen in H
+  //    is pushed with its true gains, so it delivers at least what H promised
+  //    and no "interpretation" step strands excess at interior nodes.
+  //  - CancelCycles routes each cancelled cycle's excess to the sink along a
+  //    residual path (a GAP augmentation) instead of leaving it on the cycle.
+  //
+  // The paper's exact algorithm finishes by rounding a B^(-4m)-optimal flow,
+  // which is meaningless in floating point. Here the phases stop once Delta is
+  // below the tolerance and the exact loop in run() takes over, at q = 0, from
+  // a flow that is already within the last Delta of optimal.
+  void run_fat_path(Result& result, long long max_iterations, bool& unbounded, bool& hit_limit) {
+    Stats& stats = result.stats;
+
+    // Phase zero is an exact CancelCycles: the bound below needs a lossy
+    // network, and this is where an amplifying input's cycles are first met.
+    switch (cancel_cycles(result, max_iterations)) {
+      case CancelOutcome::Lossy:
+        break;
+      case CancelOutcome::Unbounded:
+        unbounded = true;
+        return leave_fat_path();
+      case CancelOutcome::Limit:
+        hit_limit = true;
+        return leave_fat_path();
+      default:
+        return leave_fat_path();  // Let the exact loop report it.
+    }
+    if (!reaches_sink_[static_cast<std::size_t>(problem_.source)]) return leave_fat_path();
+    canonical_labels();
+    routes_certified_ = true;
+
+    const double initial_gap = discrepancy_bound();
+    if (!(initial_gap > 0.0) || !std::isfinite(initial_gap)) return leave_fat_path();
+
+    const double edges = static_cast<double>(std::max<std::size_t>(1, problem_.edges.size()));
+    // Below this the remaining gap is within the rounding of the answer itself,
+    // and the exact finish is cheaper than further halvings.
+    const double stop = std::max(capacity_epsilon_, initial_gap * 1e-12) / (2.0 * edges);
+    double gap = initial_gap;
+
+    while (true) {
+      const double fatness = gap / (2.0 * edges);
+      if (fatness <= stop) break;
+      ++stats.scaling_phases;
+
+      if (options_.gain_scaling) {
+        const double xi = std::min(0.5, gap / initial_gap);
+        slack_ = std::log1p(xi) / static_cast<double>(std::max(1, num_nodes_));
+      }
+      // Delta halved, so arcs that were too thin are fat now and the
+      // potentials were only maintained on the old fat subnetwork. Re-tighten
+      // them over every residual arc, starting from where they are.
+      potentials_valid_ = false;
+      repair_all_next_ = true;
+
+      fat_ = fatness;
+      skipped_fatness_ = 0.0;
+      bool finished = false;  // no residual path of any fatness is left
+      int drifts = 0;
+      while (true) {
+        if (!potentials_valid_) {
+          CancelOutcome outcome = cancel_violations(result, max_iterations);
+          if (outcome == CancelOutcome::Lossy) outcome = cancel_cycles(result, max_iterations);
+          if (outcome == CancelOutcome::Unbounded) {
+            unbounded = true;
+            return leave_fat_path();
+          }
+          if (outcome == CancelOutcome::Limit) {
+            hit_limit = true;
+            return leave_fat_path();
+          }
+          if (outcome != CancelOutcome::Lossy) return leave_fat_path();
+          if (!reaches_sink_[static_cast<std::size_t>(problem_.source)]) {
+            finished = true;
+            break;
+          }
+          canonical_labels();
+        }
+        if (stats.iterations >= max_iterations) {
+          hit_limit = true;
+          return leave_fat_path();
+        }
+        ++stats.path_searches;
+        skipped_fatness_ = 0.0;
+        if (!find_max_gain_path(problem_.source, problem_.sink, path_buffer_, stats)) {
+          // The potentials drifted; the top of the loop repairs them. A repair
+          // that keeps failing means the rounded tolerances are fighting the
+          // floating point, and the exact finish is the safer place to be.
+          if (++drifts > 3) return leave_fat_path();
+          continue;
+        }
+        drifts = 0;
+        if (path_buffer_.empty()) {
+          // No fat path. If the search skipped nothing, there is no path at all.
+          finished = skipped_fatness_ <= 0.0;
+          break;
+        }
+        ++stats.iterations;
+        ++stats.fat_augmentations;
+        if (push_walk(path_buffer_, 0, result) == PushOutcome::Unbounded) {
+          unbounded = true;
+          return leave_fat_path();
+        }
+      }
+      fat_ = 0.0;
+      if (finished) break;
+
+      // Every s -> t path leaves the fat subnetwork through an arc the search
+      // skipped, so no path can deliver more than the fattest of those. Phases
+      // that could only find nothing are skipped outright.
+      gap = std::min(gap / 2.0, skipped_fatness_ * 2.0 * edges);
+    }
+
+    leave_fat_path();
+  }
+
+  // Canonical labels: mu(v) is the inverse of the highest gain of any residual
+  // v -> t path, so the fatness test r / mu(v) >= delta is exact rather than an
+  // upper bound. One Dijkstra backwards from the sink over the reduced costs
+  // gives D(v), the reduced cost of the best v -> t path, and pi(v) - D(v) is a
+  // potential with pi(v) - pi(t) = log(best gain to t) and every reduced cost
+  // still non-negative: c_pi(v, w) - D(v) + D(w) >= 0 is the triangle
+  // inequality D(v) <= c_pi(v, w) + D(w).
+  //
+  // Without this the first phase reads its fatness off whatever potentials
+  // the cycle sweep left, which on a lossy network claim a gain of one
+  // everywhere, and fills paths that deliver almost nothing -- then spends
+  // tens of thousands of cycle cancellations rerouting them.
+  void canonical_labels() {
+    ++search_stamp_;
+    heap_.clear();
+    settled_.clear();
+    const int sink = problem_.sink;
+    set_distance(sink, 0.0);
+    heap_.push(0.0, static_cast<int32_t>(sink));
+    const bool check_blocked = blocked_arcs_ > 0;
+    while (!heap_.empty()) {
+      const HeapEntry top = heap_.pop();
+      NodeState& here = node_[static_cast<std::size_t>(top.node)];
+      if (here.settled_stamp == search_stamp_) continue;
+      here.settled_stamp = search_stamp_;
+      settled_.push_back(top.node);
+      const double potential = here.potential;
+      const int32_t end = net_.arc_begin[static_cast<std::size_t>(top.node) + 1];
+      for (int32_t a = net_.arc_begin[static_cast<std::size_t>(top.node)]; a < end; ++a) {
+        // The arcs entering this node are the twins of those leaving it.
+        const int incoming = twin_of(a);
+        if (net_.residual[static_cast<std::size_t>(incoming)] <= capacity_epsilon_) continue;
+        if (check_blocked && blocked(incoming)) continue;
+        const int32_t from = net_.head[static_cast<std::size_t>(a)];
+        if (!in_mask(from)) continue;
+        NodeState& state = node_[static_cast<std::size_t>(from)];
+        if (state.settled_stamp == search_stamp_) continue;
+        // Within the phase's tolerance a reduced cost may sit just below zero.
+        const double reduced = std::max(
+            0.0, net_.cost[static_cast<std::size_t>(incoming)] + state.potential - potential);
+        const double candidate = top.key + reduced;
+        if (state.distance_stamp != search_stamp_ || candidate < state.distance) {
+          state.distance = candidate;
+          state.distance_stamp = search_stamp_;
+          heap_.push(candidate, from);
+        }
+      }
+    }
+    for (const int32_t node : settled_) {
+      NodeState& state = node_[static_cast<std::size_t>(node)];
+      state.potential -= state.distance;
+    }
+  }
+
+  // Back to exact gains and full potentials for the finish.
+  void leave_fat_path() {
+    fat_ = 0.0;
+    slack_ = 0.0;
+    potentials_valid_ = false;
+    repair_all_next_ = true;
+  }
+
+  double reduced_cost(int arc) const {
+    return net_.cost[static_cast<std::size_t>(arc)] +
+           node_[static_cast<std::size_t>(tail_of(arc))].potential -
+           node_[static_cast<std::size_t>(net_.head[static_cast<std::size_t>(arc)])].potential;
+  }
+
+  // The first half of CancelCycles, for when the potentials are known to be
+  // valid on every arc except a few. After a Fat-Path phase those few are the
+  // thin arcs the phase skipped, and every flow-generating cycle passes through
+  // one of them. For such an arc (v, w) the most generating cycle through it is
+  // the arc plus the highest-gain w -> v path over the certified arcs: one
+  // early-exit Dijkstra, where finding the same cycle with a label-correcting
+  // sweep costs a pass over the whole network. The potential update from that
+  // search raises the arc's reduced cost by exactly the path's, so afterwards
+  // it reads the cycle's log-gain: still negative means the cycle generates.
+  //
+  // What this cannot reach -- a cycle through two violating arcs -- is left to
+  // the sweep in cancel_cycles, which stays the authority on whether the
+  // network is lossy.
+  CancelOutcome cancel_violations(Result& result, long long max_iterations) {
+    compute_reaches_sink();
+    const double tolerance = potential_tolerance_ + slack_;
+    violations_.clear();
+    for (int node = 0; node < num_nodes_; ++node) {
+      if (!in_mask(node)) continue;
+      const int32_t end = net_.arc_begin[static_cast<std::size_t>(node) + 1];
+      for (int32_t a = net_.arc_begin[static_cast<std::size_t>(node)]; a < end; ++a) {
+        if (!usable(a) || !in_mask(net_.head[static_cast<std::size_t>(a)])) continue;
+        if (reduced_cost(a) < -tolerance) violations_.push_back(a);
+      }
+    }
+    for (const int32_t arc : violations_) {
+      // A cancellation saturates one arc of the cycle, not necessarily this
+      // one, so an arc may need a few cycles before it is fixed.
+      for (int attempt = 0; attempt < 8; ++attempt) {
+        if (!usable(arc) || reduced_cost(arc) >= -tolerance) break;
+        const int from = net_.head[static_cast<std::size_t>(arc)];
+        const int to = tail_of(arc);
+        dijkstra_scan_impl<false, false, true>(from, to, result.stats);
+        const bool found = found_target_ && build_path(from, to, cycle_path_) && !cycle_path_.empty();
+        apply_potential_update();
+        if (!found || reduced_cost(arc) >= -tolerance) break;
+        if (result.stats.iterations >= max_iterations) return CancelOutcome::Limit;
+        cycle_buffer_.assign(1, arc);
+        cycle_buffer_.insert(cycle_buffer_.end(), cycle_path_.begin(), cycle_path_.end());
+        ++result.stats.iterations;
+        ++result.stats.cycles_cancelled;
+        const PushOutcome outcome = cancel_and_route(cycle_buffer_, result);
+        if (outcome == PushOutcome::Unbounded) return CancelOutcome::Unbounded;
+        if (outcome == PushOutcome::Blocked) break;
+      }
+    }
+    return CancelOutcome::Lossy;
+  }
+
+  // CancelCycles: cancel flow-generating cycles reaching the sink until the
+  // relabelled residual network is lossy, i.e. until valid potentials exist.
+  // Each cycle's excess is carried to the sink with it.
+  CancelOutcome cancel_cycles(Result& result, long long max_iterations) {
+    int stalled = 0;
+    while (true) {
+      ++result.stats.cycle_searches;
+      if (establish_potentials(result.stats)) return CancelOutcome::Lossy;
+      if (!options_.cancel_generating_cycles) return CancelOutcome::Rejected;
+      if (result.stats.iterations >= max_iterations) return CancelOutcome::Limit;
+      ++result.stats.iterations;
+      ++result.stats.cycles_cancelled;
+      const PushOutcome outcome = cancel_and_route(cycle_buffer_, result);
+      if (outcome == PushOutcome::Unbounded) return CancelOutcome::Unbounded;
+      if (outcome == PushOutcome::Pushed) stalled = 0;
+      if (outcome == PushOutcome::Blocked && ++stalled > 2) return CancelOutcome::Stalled;
+    }
+  }
+
+  // Delta_0: an upper bound on how much more can reach the sink, from the
+  // cheaper of two cuts. Around the sink it is what its residual in-arcs can
+  // deliver. Around the source it is the relabelled residual capacity leaving
+  // it, r / mu(s), which bounds the sink flow because the relabelled network
+  // is lossy. Either may be infinite on uncapacitated arcs.
+  double discrepancy_bound() const {
+    const int sink = problem_.sink;
+    const int source = problem_.source;
+    double sink_cut = 0.0;
+    const int32_t sink_end = net_.arc_begin[static_cast<std::size_t>(sink) + 1];
+    for (int32_t a = net_.arc_begin[static_cast<std::size_t>(sink)]; a < sink_end; ++a) {
+      const int incoming = twin_of(a);
+      if (!usable(incoming) || !in_mask(net_.head[static_cast<std::size_t>(a)])) continue;
+      sink_cut += net_.residual[static_cast<std::size_t>(incoming)] * gain_of(incoming);
+    }
+    const double to_sink = std::exp(node_[static_cast<std::size_t>(source)].potential -
+                                    node_[static_cast<std::size_t>(sink)].potential);
+    double source_cut = 0.0;
+    const int32_t source_end = net_.arc_begin[static_cast<std::size_t>(source) + 1];
+    for (int32_t a = net_.arc_begin[static_cast<std::size_t>(source)]; a < source_end; ++a) {
+      if (!usable(a) || !in_mask(net_.head[static_cast<std::size_t>(a)])) continue;
+      source_cut += net_.residual[static_cast<std::size_t>(a)] * to_sink;
+    }
+    return std::min(sink_cut, source_cut);
+  }
 
   void validate() {
     if (num_nodes_ <= 0) throw std::invalid_argument("num_nodes must be positive");
@@ -320,6 +653,8 @@ class Solver {
     bytes += label_.capacity() * sizeof(double);
     bytes += colour_.capacity() + colour_stamp_.capacity() * sizeof(uint32_t);
     bytes += walk_stack_.capacity() * sizeof(int32_t);
+    bytes += violations_.capacity() * sizeof(int32_t);
+    bytes += cycle_path_.capacity() * sizeof(int);
     return bytes;
   }
 
@@ -449,9 +784,23 @@ class Solver {
     queue_.clear();
 
     if (from_scratch) {
+      repair_all_next_ = false;
       for (int node = 0; node < num_nodes_; ++node) {
         if (!in_mask(node)) continue;
         label_[static_cast<std::size_t>(node)] = 0.0;
+        in_queue_[static_cast<std::size_t>(node)] = 1;
+        queue_.push_back(node);
+      }
+    } else if (repair_all_next_) {
+      // Start from the current potentials and seed every node. Used between
+      // Fat-Path phases, where the potentials are good everywhere except on
+      // the arcs the previous phase was not allowed to use: one pass over the
+      // arcs finds those, and the sweep only works where they were.
+      repair_all_next_ = false;
+      repair_seeds_.clear();
+      for (int node = 0; node < num_nodes_; ++node) {
+        if (!in_mask(node)) continue;
+        label_[static_cast<std::size_t>(node)] = -node_[static_cast<std::size_t>(node)].potential;
         in_queue_[static_cast<std::size_t>(node)] = 1;
         queue_.push_back(node);
       }
@@ -497,7 +846,7 @@ class Solver {
         const int next = net_.head[static_cast<std::size_t>(a)];
         if (!in_mask(next)) continue;
         if (base - net_.cost[static_cast<std::size_t>(a)] >
-            label_[static_cast<std::size_t>(next)] + 1e-9) {
+            label_[static_cast<std::size_t>(next)] + 1e-9 + slack_) {
           return false;
         }
       }
@@ -582,6 +931,10 @@ class Solver {
     long long relaxations = 0;
     long long since_check = 0;
     long long check_interval = std::max<long long>(32, num_nodes_);
+    // Inside a gain-scaled phase a label only has to come within q of every
+    // constraint, so improvements smaller than that are not worth propagating
+    // and only cycles whose gain survives rounding are found.
+    const double improvement = std::max(log_epsilon_, slack_);
     while (cursor < queue_.size()) {
       const int node = queue_[cursor++];
       in_queue_[static_cast<std::size_t>(node)] = 0;
@@ -592,7 +945,7 @@ class Solver {
         const int next = net_.head[static_cast<std::size_t>(a)];
         if (!in_mask(next)) continue;
         const double candidate = base - net_.cost[static_cast<std::size_t>(a)];
-        if (candidate > label_[static_cast<std::size_t>(next)] + log_epsilon_) {
+        if (candidate > label_[static_cast<std::size_t>(next)] + improvement) {
           label_[static_cast<std::size_t>(next)] = candidate;
           node_[static_cast<std::size_t>(next)].parent = a;
           ++relaxations;
@@ -659,6 +1012,10 @@ class Solver {
     for (int node = 0; node < num_nodes_; ++node) {
       if (in_mask(node)) label_[static_cast<std::size_t>(node)] = 0.0;
     }
+    // At q = 0 -- the certificate, and the exact finish -- this is plain
+    // Bellman-Ford. Inside a gain-scaled phase it looks only for cycles whose
+    // gain survives rounding, the same as the sweep.
+    const double improvement = std::max(log_epsilon_, slack_);
 
     bool changed = true;
     for (int round = 0; round < num_nodes_ && changed; ++round) {
@@ -672,7 +1029,7 @@ class Solver {
           const int next = net_.head[static_cast<std::size_t>(a)];
           if (!in_mask(next)) continue;
           const double candidate = base - net_.cost[static_cast<std::size_t>(a)];
-          if (candidate > label_[static_cast<std::size_t>(next)] + log_epsilon_) {
+          if (candidate > label_[static_cast<std::size_t>(next)] + improvement) {
             label_[static_cast<std::size_t>(next)] = candidate;
             node_[static_cast<std::size_t>(next)].parent = a;
             changed = true;
@@ -682,21 +1039,28 @@ class Solver {
     }
     if (!changed) return {};
 
-    for (int node = 0; node < num_nodes_; ++node) {
-      if (!in_mask(node)) continue;
-      const double base = label_[static_cast<std::size_t>(node)];
-      const int32_t end = net_.arc_begin[static_cast<std::size_t>(node) + 1];
-      for (int32_t a = net_.arc_begin[static_cast<std::size_t>(node)]; a < end; ++a) {
-        if (!usable(a)) continue;
-        const int next = net_.head[static_cast<std::size_t>(a)];
-        if (!in_mask(next)) continue;
-        if (base - net_.cost[static_cast<std::size_t>(a)] <=
-            label_[static_cast<std::size_t>(next)] + log_epsilon_) {
-          continue;
+    // The rounds did not settle, so some cycle is generating. Prefer one whose
+    // gain survives rounding; failing that, any genuinely generating one, so
+    // that a gain-scaled phase never mistakes an unsettled labelling for
+    // valid potentials.
+    for (const bool strict : {true, false}) {
+      if (!strict && !(slack_ > 0.0)) break;
+      for (int node = 0; node < num_nodes_; ++node) {
+        if (!in_mask(node)) continue;
+        const double base = label_[static_cast<std::size_t>(node)];
+        const int32_t end = net_.arc_begin[static_cast<std::size_t>(node) + 1];
+        for (int32_t a = net_.arc_begin[static_cast<std::size_t>(node)]; a < end; ++a) {
+          if (!usable(a)) continue;
+          const int next = net_.head[static_cast<std::size_t>(a)];
+          if (!in_mask(next)) continue;
+          if (base - net_.cost[static_cast<std::size_t>(a)] <=
+              label_[static_cast<std::size_t>(next)] + improvement) {
+            continue;
+          }
+          const std::vector<int> cycle = extract_cycle(next, strict);
+          if (!cycle.empty()) return cycle;
+          if (stats_ != nullptr) ++stats_->cycle_extract_failures;
         }
-        const std::vector<int> cycle = extract_cycle(next);
-        if (!cycle.empty()) return cycle;
-        if (stats_ != nullptr) ++stats_->cycle_extract_failures;
       }
     }
     return {};
@@ -704,7 +1068,7 @@ class Solver {
 
   // Follows parent pointers from `start` until a node repeats, which closes a
   // cycle, and returns it in forward order.
-  std::vector<int> extract_cycle(int start) {
+  std::vector<int> extract_cycle(int start, bool strict = true) {
     if (stamp_at_.size() != static_cast<std::size_t>(num_nodes_)) {
       stamp_at_.assign(static_cast<std::size_t>(num_nodes_), 0);
     }
@@ -740,7 +1104,16 @@ class Solver {
     }
     double total = 0.0;
     for (const int arc : cycle) total -= net_.cost[static_cast<std::size_t>(arc)];
-    if (!(total > log_epsilon_)) return {};  // Not actually gain-amplifying.
+    // Not actually gain-amplifying -- or, inside a gain-scaled phase, not by
+    // more than q. That is precisely the set of cycles the q-tolerant sweep
+    // cannot converge around: each lap raises every label on the cycle by its
+    // total log-gain, and a relaxation needs more than q, so the sweep settles
+    // exactly when no cycle gains more than q in total. Cycles below that are
+    // the rounding error the refinement and the exact finish remove;
+    // cancelling them inside a phase costs a hundredfold more cycles on a
+    // network with many near-tied paths.
+    const double threshold = strict ? std::max(log_epsilon_, slack_) : log_epsilon_;
+    if (!(total > threshold)) return {};
     return cycle;
   }
 
@@ -767,7 +1140,31 @@ class Solver {
   // have drifted or were invalidated; the caller rebuilds them.
   // Computes distances and the settled set. The caller then augments and
   // applies the potential update.
+  //
+  // `kFat` restricts the search to the fat_-fat arcs of a Fat-Path phase, and
+  // `kRounded` runs it in the gain-rounded network: keys are the reduced costs
+  // rounded up to whole multiples of slack_, so the search tolerates reduced
+  // costs down to -slack_ and leaves none below it.
   bool dijkstra_scan(int source, int target, Stats& stats) {
+    if (fat_ > 0.0) {
+      return slack_ > 0.0 ? dijkstra_scan_impl<true, true, false>(source, target, stats)
+                          : dijkstra_scan_impl<true, false, false>(source, target, stats);
+    }
+    return slack_ > 0.0 ? dijkstra_scan_impl<false, true, false>(source, target, stats)
+                        : dijkstra_scan_impl<false, false, false>(source, target, stats);
+  }
+
+  // `kLenient` searches only the arcs the potentials still certify, skipping a
+  // negative reduced cost instead of giving up on the search. That is the
+  // highest-gain route over those arcs, used to carry a cancelled cycle's
+  // excess while the potentials are known to be broken elsewhere.
+  template <bool kFat, bool kRounded, bool kLenient>
+  bool dijkstra_scan_impl(int source, int target, Stats& stats) {
+    key_unit_ = kRounded ? slack_ : 1.0;
+    const double inverse_unit = kRounded ? 1.0 / slack_ : 1.0;
+    const double tolerance = potential_tolerance_ + (kRounded ? slack_ : 0.0);
+    const double target_potential = node_[static_cast<std::size_t>(target)].potential;
+    double skipped = 0.0;  // the fattest arc left out, relative to fat_
     ++search_stamp_;
     ++stats.dijkstra_searches;
     heap_.clear();
@@ -799,15 +1196,27 @@ class Solver {
       stats.arc_scans += end - net_.arc_begin[static_cast<std::size_t>(top.node)];
       const bool check_blocked = blocked_arcs_ > 0;
       const bool check_mask = !mask_is_full_;
+      // An arc out of this node is fat when r / mu(v) >= fat_, i.e. when its
+      // residual reaches fat_ * mu(v). One exp per settled node, not per arc.
+      const double fat_floor =
+          kFat ? fat_ * std::exp(target_potential - base_potential) : 0.0;
       for (int32_t a = net_.arc_begin[static_cast<std::size_t>(top.node)]; a < end; ++a) {
-        if (net_.residual[static_cast<std::size_t>(a)] <= capacity_epsilon_) continue;
+        const double residual = net_.residual[static_cast<std::size_t>(a)];
+        if (residual <= capacity_epsilon_) continue;
         if (check_blocked && blocked(a)) continue;
         const int32_t next = net_.head[static_cast<std::size_t>(a)];
         if (check_mask && !in_mask(next)) continue;
         NodeState& state = node_[static_cast<std::size_t>(next)];
         if (state.settled_stamp == search_stamp_) continue;
+        if constexpr (kFat) {
+          if (residual < fat_floor) {
+            skipped = std::max(skipped, residual / fat_floor);
+            continue;
+          }
+        }
         double reduced = net_.cost[static_cast<std::size_t>(a)] + base_potential - state.potential;
-        if (reduced < -potential_tolerance_) {
+        if (reduced < -tolerance) {
+          if constexpr (kLenient) continue;
           // Drifted far enough to matter: the potentials are no longer a valid
           // reweighting, so stop and let them be rebuilt rather than quietly
           // returning a path that is not the highest-gain one. This asks for a
@@ -817,6 +1226,11 @@ class Solver {
           force_full_potentials_ = true;
           stats.relaxations += relaxations;
           return false;
+        }
+        if constexpr (kRounded) {
+          // The rounded gain b^(-k): k whole steps of q, never negative. The
+          // small allowance keeps an exact multiple from rounding up a step.
+          reduced = std::ceil(reduced * inverse_unit - 1e-9);
         }
         if (reduced < 0.0) reduced = 0.0;  // Harmless rounding; keep it monotone.
         const double candidate = base + reduced;
@@ -832,6 +1246,11 @@ class Solver {
     stats.relaxations += relaxations;
     stop_distance_ = stop;
     found_target_ = found;
+    if constexpr (kFat) {
+      if (!found) skipped_fatness_ = std::max(skipped_fatness_, skipped * fat_);
+    } else {
+      (void)skipped;
+    }
     return true;
   }
 
@@ -840,9 +1259,10 @@ class Solver {
   // lets the untouched nodes keep their value and leaves the update
   // proportional to the part of the graph the search actually visited.
   void apply_potential_update() {
+    // In the rounded network distances are counted in steps of q.
     for (const int32_t node : settled_) {
       NodeState& state = node_[static_cast<std::size_t>(node)];
-      state.potential += state.distance - stop_distance_;
+      state.potential += (state.distance - stop_distance_) * key_unit_;
     }
   }
 
@@ -905,6 +1325,17 @@ class Solver {
       return true;  // An empty path means no route to the sink, which is an answer.
     }
     return label_correcting_path(source, target, path, stats);
+  }
+
+  // The highest-gain residual path over the arcs whose reduced cost is still
+  // non-negative. The potential update keeps those arcs certified.
+  bool find_route(int source, int target, std::vector<int>& path) {
+    if (stats_ == nullptr) return false;
+    dijkstra_scan_impl<false, false, true>(source, target, *stats_);
+    path.clear();
+    const bool found = found_target_ && build_path(source, target, path) && !path.empty();
+    apply_potential_update();
+    return found;
   }
 
   // Any residual path, used to carry a cycle's excess to the sink when the
@@ -1150,12 +1581,19 @@ class Solver {
     if (cycle.empty()) return PushOutcome::Blocked;
     const int origin = tail_of(cycle.front());
     route_buffer_.clear();
-    // A cycle is only found when no feasible potential exists, so the
-    // highest-gain route would cost a full sweep. The route only has to carry
-    // the excess: taking the shortest one costs a single breadth-first pass,
-    // and any routing it gets wrong is what the reverse residual arcs of the
-    // following path augmentations are for.
-    if (origin != problem_.sink && !find_any_path(origin, problem_.sink, route_buffer_)) {
+    // A cycle is only found when no feasible potential exists, so the true
+    // highest-gain route would cost a full sweep. But the potentials are
+    // broken only on some arcs -- after a Fat-Path phase, on the arcs that
+    // phase was not allowed to use -- so the highest-gain route over the rest
+    // is one early-exit Dijkstra. That matters: the excess usually belongs on
+    // the remainder of the path the cycle rerouted, and an arbitrary route
+    // creates new flow-generating cycles as fast as they are cancelled. Only
+    // when no certified route exists does it fall back to the fewest hops --
+    // and before any canonical labels exist, when the cycles are the input's
+    // own and the potentials say nothing yet, the fewest hops measures faster.
+    if (origin != problem_.sink &&
+        !(routes_certified_ && find_route(origin, problem_.sink, route_buffer_)) &&
+        !find_any_path(origin, problem_.sink, route_buffer_)) {
       return PushOutcome::Blocked;
     }
     walk_buffer_.assign(cycle.begin(), cycle.end());
@@ -1297,6 +1735,8 @@ class Solver {
   std::vector<int> route_buffer_;
   std::vector<int> walk_buffer_;
   std::vector<int> cycle_buffer_;
+  std::vector<int> cycle_path_;
+  std::vector<int32_t> violations_;
   std::vector<double> coefficient_;
   std::vector<int> scratch_edges_;
   // Only a walk that can repeat an edge needs these, so they stay empty on a
@@ -1308,6 +1748,17 @@ class Solver {
   double capacity_epsilon_ = 0.0;
   double log_epsilon_ = 1e-15;
   double potential_tolerance_ = 1e-9;
+
+  // Fat-Path state. fat_ > 0 restricts the path search to fat arcs; slack_ > 0
+  // is q = log b, the gain-rounding quantum. Both are zero outside the phases.
+  double fat_ = 0.0;
+  double slack_ = 0.0;
+  double key_unit_ = 1.0;
+  double skipped_fatness_ = 0.0;
+  bool repair_all_next_ = false;
+  // Set once canonical labels exist; from then on the potentials describe the
+  // network well enough to route a cancelled cycle's excess by them.
+  bool routes_certified_ = false;
 };
 
 }  // namespace
@@ -1317,6 +1768,6 @@ Result solve(const Problem& problem, const Options& options) {
   return solver.run();
 }
 
-const char* version() { return "0.2.0"; }
+const char* version() { return "0.3.0"; }
 
 }  // namespace gmf

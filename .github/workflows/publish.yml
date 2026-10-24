@@ -1,0 +1,194 @@
+name: wheels
+
+# Builds every wheel, the source distribution and the WebAssembly package on
+# every push and pull request, so a platform that breaks is caught before a
+# release, and publishes to PyPI and npm only when a GitHub Release is
+# published.
+#
+# The solver is a shared library with a plain C ABI loaded through ctypes; it
+# never links libpython. So each wheel is tagged py3-none-<platform> and is
+# built ONCE per OS/CPU, not once per Python version:
+#
+#   Linux    x86_64, aarch64       manylinux (glibc) + musllinux (Alpine)
+#   macOS    x86_64, arm64
+#   Windows  AMD64, ARM64
+#
+# One wheel then serves every CPython from 3.8 up, the free-threaded builds,
+# and PyPy. The sdist builds from source with CMake and a C++17 compiler for
+# anything else. Every platform wheel is installed and the Python tests run
+# against it (GMAXFLOW_TEST_INSTALLED=1), so a wheel whose library fails to
+# load fails the build.
+#
+# PyPI trusted publishing (OIDC): no API token is stored anywhere. PyPI checks
+# that the upload came from THIS workflow file (publish.yml -- keep the name),
+# in this repository, running in the `pypi` environment.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  platform_wheels:
+    name: wheel / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64,  os: ubuntu-latest,    archs: x86_64 }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm, archs: aarch64 }
+          - { name: macos-x86_64,  os: macos-15-intel,   archs: x86_64 }
+          - { name: macos-arm64,   os: macos-latest,     archs: arm64 }
+          - { name: windows-amd64, os: windows-latest,   archs: AMD64 }
+          - { name: windows-arm64, os: windows-11-arm,   archs: ARM64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pypa/cibuildwheel@v4.2.1
+        env:
+          CIBW_ARCHS: ${{ matrix.archs }}
+        with:
+          output-dir: wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.name }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    name: source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build --sdist
+          python -m twine check dist/*
+
+      - name: The sdist must build and pass on its own
+        # Unpack and build from the tarball, not the checkout: this is what a
+        # user on a platform without a wheel gets.
+        run: |
+          mkdir sdist-test && tar xzf dist/*.tar.gz -C sdist-test --strip-components=1
+          python -m pip install ./sdist-test pytest
+          cd sdist-test
+          GMAXFLOW_TEST_INSTALLED=1 python -m pytest -q tests/test_python.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  wasm:
+    name: webassembly package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Emscripten SDK
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$HOME/emsdk"
+          "$HOME/emsdk/emsdk" install latest
+          "$HOME/emsdk/emsdk" activate latest
+
+      - name: Build and smoke-test
+        run: |
+          source "$HOME/emsdk/emsdk_env.sh"
+          bash bindings/wasm/build.sh --test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-package
+          path: bindings/wasm/pkg
+
+  publish-pypi:
+    name: publish to PyPI
+    # A manual run publishes only when dispatched on a release tag (to retry a
+    # failed upload); dispatching it on a branch just builds and tests.
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
+    needs: [platform_wheels, sdist]
+    runs-on: ubuntu-latest
+    # This environment must exist in the repository settings, and its name must
+    # match the one registered with the trusted publisher on PyPI.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/generalized-maxflow
+    permissions:
+      id-token: write  # the OIDC token; without it the upload is refused
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+      - run: ls -la dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-npm:
+    name: publish to npm
+    needs: [wasm]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-package
+          path: pkg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Publish
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is not set; skipping the npm publish." >&2
+            exit 0
+          fi
+          cd pkg && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  attach-to-release:
+    name: attach the artifacts to the release
+    needs: [platform_wheels, sdist, wasm]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Bundle the WebAssembly package
+        run: |
+          cd artifacts/wasm-package && zip -r ../../generalized-maxflow-wasm.zip . && cd -
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            --repo "${{ github.repository }}" \
+            generalized-maxflow-wasm.zip \
+            artifacts/sdist/*.tar.gz \
+            artifacts/wheels-*/*.whl \
+            --clobber

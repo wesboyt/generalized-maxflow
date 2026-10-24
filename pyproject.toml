@@ -1,10 +1,10 @@
 [build-system]
-requires = ["scikit-build-core>=0.8"]
+requires = ["scikit-build-core>=0.10"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "generalized-maxflow"
-version = "0.1.0"
+version = "0.3.0"
 description = "Generalized maximum flow: maximum flow with per-edge gain multipliers"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -26,6 +26,8 @@ classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: C++",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
   "Topic :: Scientific/Engineering :: Mathematics",
 ]
 
@@ -38,30 +40,35 @@ Issues = "https://github.com/wesboyt/generalized-maxflow/issues"
 gmaxflow = "gmaxflow.__main__:main"
 
 [tool.scikit-build]
-minimum-version = "0.8"
+minimum-version = "build-system.requires"
 cmake.version = ">=3.18"
+cmake.build-type = "Release"
 wheel.packages = ["python/gmaxflow"]
-sdist.include = ["include", "src", "bindings", "tests", "tools", "CMakeLists.txt"]
-sdist.exclude = ["build", "dist", ".github", "*.egg-info"]
+# The solver is loaded with ctypes and never links libpython, so one wheel per
+# OS/CPU serves every CPython (free-threaded included) and PyPy: tag it
+# py3-none-<platform> instead of cpXY-cpXY-<platform>.
+wheel.py-api = "py3"
+wheel.license-files = ["LICENSE"]
+# Everything git tracks goes in, minus what a source build does not need.
+# Anchored, so a "src" inside a stray build tree is not swept in.
+sdist.exclude = ["/build*", "/dist", "/wheelhouse", "/.github", "/docs", "*.egg-info",
+                 "/bindings/wasm/pkg"]
 
 [tool.scikit-build.cmake.define]
-GMF_BUILD_PYTHON = "ON"
+GMF_BUILD_SHARED = "ON"
 GMF_BUILD_TESTS = "OFF"
 GMF_BUILD_CLI = "OFF"
+GMF_BUILD_BENCH = "OFF"
 
 [tool.cibuildwheel]
-build = "cp38-* cp39-* cp310-* cp311-* cp312-* cp313-*"
-skip = ["pp*", "*-musllinux_i686", "*_i686"]
-build-frontend = "build"
+# py3-none wheels are Python-independent: build each platform ONCE, then
+# install that one wheel and test it.
+build = "cp312-*"
+skip = ["*-musllinux_i686", "*-manylinux_i686", "*-win32"]
 test-requires = ["pytest"]
 test-command = "pytest -q {project}/tests/test_python.py"
-
-[tool.cibuildwheel.linux]
-archs = ["x86_64", "aarch64"]
+environment = { GMAXFLOW_TEST_INSTALLED = "1" }
 
 [tool.cibuildwheel.macos]
-archs = ["x86_64", "arm64"]
-environment = { MACOSX_DEPLOYMENT_TARGET = "10.15" }
-
-[tool.cibuildwheel.windows]
-archs = ["AMD64"]
+# The earliest macOS each architecture supports well; widens compatibility.
+environment = { GMAXFLOW_TEST_INSTALLED = "1", MACOSX_DEPLOYMENT_TARGET = "10.13" }

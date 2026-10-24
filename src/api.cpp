@@ -114,6 +114,12 @@ Options read_options(const Value& request) {
   if (const Value* value = scope.find_any({"use_potentials", "usePotentials"})) {
     options.use_potentials = value->as_bool(options.use_potentials);
   }
+  if (const Value* value = scope.find_any({"fat_path", "fatPath"})) {
+    options.fat_path = value->as_bool(options.fat_path);
+  }
+  if (const Value* value = scope.find_any({"gain_scaling", "gainScaling"})) {
+    options.gain_scaling = value->as_bool(options.gain_scaling);
+  }
   return options;
 }
 
@@ -285,6 +291,10 @@ Value result_to_json(const Problem& problem, const Result& result, const NodeTab
   stats.set("path_search_seconds", Value(result.stats.path_search_seconds));
   stats.set("cycle_search_seconds", Value(result.stats.cycle_search_seconds));
   stats.set("push_seconds", Value(result.stats.push_seconds));
+  stats.set("scaling_seconds", Value(result.stats.scaling_seconds));
+  stats.set("scaling_phases", Value(static_cast<double>(result.stats.scaling_phases)));
+  stats.set("fat_augmentations", Value(static_cast<double>(result.stats.fat_augmentations)));
+  stats.set("cycles_cancelled", Value(static_cast<double>(result.stats.cycles_cancelled)));
   stats.set("potential_repairs", Value(static_cast<double>(result.stats.potential_repairs)));
   stats.set("working_bytes", Value(static_cast<double>(result.stats.working_bytes)));
   stats.set("blocked_arcs", Value(static_cast<double>(result.stats.blocked_arcs)));

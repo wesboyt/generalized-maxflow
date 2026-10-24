@@ -54,6 +54,10 @@ export interface Stats {
   path_searches: number;
   cycle_searches: number;
   relaxations: number;
+  /** Fat-Path Delta-phases run, and the augmentations made inside them. */
+  scaling_phases: number;
+  fat_augmentations: number;
+  cycles_cancelled: number;
 }
 
 export type Status =
@@ -96,6 +100,10 @@ export interface Options {
   max_iterations?: number;
   collect_paths?: boolean;
   cancel_generating_cycles?: boolean;
+  /** Run the Tardos-Wayne Fat-Path scaling phases before the exact finish. Default true. */
+  fat_path?: boolean;
+  /** Round gains to powers of (1 + xi)^(1/n) inside those phases. Default true. */
+  gain_scaling?: boolean;
   pretty?: boolean;
 }
 

@@ -3,7 +3,8 @@
 The full write-up now lives in the [README](../README.md#the-algorithm): the
 problem statement and notation, the residual network, the chain-rule bottleneck,
 Onaga's highest-gain augmentation, node potentials, cycle detection off the
-parent forest, the optimality certificate, complexity, and the measurements
+parent forest, the optimality certificate, Tardos and Wayne's Fat-Path with
+gain-scaling, complexity, and the measurements
 behind the decision not to run any of it concurrently.
 
 [`algorithm-flow.svg`](algorithm-flow.svg) is the figure: how a constricting
@@ -18,6 +19,21 @@ Implementation notes that did not belong in the README:
   `apply_potential_update` is the per-augmentation search; `bottleneck_of` and
   `push_walk` implement the chain-rule limit including the net-change rule for
   an edge a walk uses in both directions; `finalize` computes the certificate.
+  The Fat-Path phases are `run_fat_path`; `canonical_labels` is the backward
+  Dijkstra that starts each phase, `cancel_violations` the Dijkstra half of
+  CancelCycles and `cancel_cycles` the sweep half, and the fat test and the
+  gain rounding are the `kFat` and `kRounded` instantiations of
+  `dijkstra_scan_impl`.
+
+- **Where the Fat-Path tuning came from.** Each of the less obvious choices in
+  `run_fat_path` replaced a measured failure: fatness read off stale potentials
+  (99 000 cancellations on a 1 000-node lossy graph, fixed by canonical labels);
+  cycle excess routed by fewest hops (new cycles as fast as old ones went);
+  cancelling every positive cycle inside a rounded phase rather than only those
+  gaining more than q (4 883 cancellations instead of 41); and a mean-gain
+  rather than total-gain threshold for that test, which rejected exactly the
+  cycles the q-tolerant sweep diverges on and forced an O(nm) Bellman-Ford
+  fallback per cycle (5.0 s instead of 0.33 s).
 
 - **Why the certificate uses the slow routines.** `find_cycle_by_rounds` and a
   plain reachability search are deliberately not the accelerated paths the main

@@ -85,12 +85,14 @@ std::size_t estimate_bytes(const gmf::Problem& problem, const gmf::Result& resul
 }
 
 void run(const std::string& shape, int nodes, int degree, double max_multiplier,
-         bool collect_paths) {
+         bool collect_paths, bool fat_path = true, bool gain_scaling = true) {
   const gmf::Problem problem = shape == "uniform"
                                    ? uniform(nodes, degree, max_multiplier, 12345)
                                    : layered(nodes, degree, max_multiplier, 12345);
   gmf::Options options;
   options.collect_paths = collect_paths;
+  options.fat_path = fat_path;
+  options.gain_scaling = gain_scaling;
 
   const auto start = std::chrono::steady_clock::now();
   const gmf::Result result = gmf::solve(problem, options);
@@ -102,13 +104,14 @@ void run(const std::string& shape, int nodes, int degree, double max_multiplier,
   std::printf(
       "%-8s n=%-7d m=%-8zu %-16s flow=%-14.6g wall=%7.3fs  path=%6.3fs cycle=%6.3fs "
       "push=%6.3fs reach=%6.3fs sweep=%6.3fs verify=%6.3fs | iters=%-7lld paths=%-7lld cycles=%-6lld relax=%-12lld dij=%-7lld "
-      "lc=%-6lld scans=%-12lld steps=%-9zu work=%-5zuMB steps=%-4zuMB total=%zuMB\n",
+      "lc=%-6lld phases=%-3lld fat=%-6lld cancelled=%-6lld scans=%-12lld steps=%-9zu work=%-5zuMB steps=%-4zuMB total=%zuMB\n",
       shape.c_str(), problem.num_nodes, problem.edges.size(), result.status.c_str(),
       result.max_flow, wall, result.stats.path_search_seconds, result.stats.cycle_search_seconds,
       result.stats.push_seconds, result.stats.reach_seconds, result.stats.sweep_seconds,
       result.stats.verify_seconds, result.stats.iterations, result.stats.path_searches,
       result.stats.cycle_searches, result.stats.relaxations, result.stats.dijkstra_searches,
-      result.stats.label_correcting_searches, result.stats.arc_scans, steps,
+      result.stats.label_correcting_searches, result.stats.scaling_phases,
+      result.stats.fat_augmentations, result.stats.cycles_cancelled, result.stats.arc_scans, steps,
       result.stats.working_bytes / (1024 * 1024),
       (result.steps.capacity() * sizeof(gmf::Step) +
        result.augmentations.capacity() * sizeof(gmf::Augmentation)) /
@@ -125,7 +128,10 @@ int main(int argc, char** argv) {
     const int nodes = std::atoi(argv[2]);
     const int degree = argc > 3 ? std::atoi(argv[3]) : 4;
     const double max_multiplier = argc > 4 ? std::atof(argv[4]) : 0.95;
-    run(shape, nodes, degree, max_multiplier, true);
+    // A fifth argument of "onaga" turns the Fat-Path phases off, and "exact"
+    // keeps them but without rounding the gains, for comparison.
+    const std::string mode = argc > 5 ? argv[5] : "";
+    run(shape, nodes, degree, max_multiplier, true, mode != "onaga", mode != "exact");
     return 0;
   }
 

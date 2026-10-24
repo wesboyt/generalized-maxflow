@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Mapping, Optional, Union
 
-from . import _gmaxflow
+from . import _native
 
 __all__ = [
     "solve",
@@ -63,7 +63,7 @@ def solve_json(request: str) -> str:
     This is the raw interface the C++ library exposes; the bytes are not parsed
     on the way in or out.
     """
-    return _gmaxflow.solve_json(request)
+    return _native.solve_json(request)
 
 
 def solve(
@@ -73,6 +73,8 @@ def solve(
     max_iterations: Optional[int] = None,
     collect_paths: Optional[bool] = None,
     cancel_generating_cycles: Optional[bool] = None,
+    fat_path: Optional[bool] = None,
+    gain_scaling: Optional[bool] = None,
     require_optimal: bool = False,
 ) -> Dict[str, Any]:
     """Solve a generalized maximum flow problem.
@@ -99,12 +101,14 @@ def solve(
         "max_iterations": max_iterations,
         "collect_paths": collect_paths,
         "cancel_generating_cycles": cancel_generating_cycles,
+        "fat_path": fat_path,
+        "gain_scaling": gain_scaling,
     }
     options.update({name: value for name, value in overrides.items() if value is not None})
     if options:
         request["options"] = options
 
-    answer = json.loads(_gmaxflow.solve_json(json.dumps(request)))
+    answer = json.loads(_native.solve_json(json.dumps(request)))
 
     if answer.get("status") == "invalid_input":
         raise InvalidGraphError(answer.get("error", "invalid graph"))
@@ -126,4 +130,4 @@ def max_flow(graph: Graph, **options: Any) -> float:
 
 def version() -> str:
     """The version of the native solver."""
-    return _gmaxflow.version()
+    return _native.version()

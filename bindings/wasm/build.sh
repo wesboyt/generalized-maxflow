@@ -35,7 +35,7 @@ emcmake cmake -S "$root" -B "$build_dir" "${generator[@]}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DGMF_BUILD_TESTS=OFF \
   -DGMF_BUILD_CLI=OFF \
-  -DGMF_BUILD_PYTHON=OFF
+  -DGMF_BUILD_SHARED=OFF
 cmake --build "$build_dir" --config Release
 
 rm -rf "$package_dir"

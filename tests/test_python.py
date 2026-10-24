@@ -157,3 +157,62 @@ def test_require_optimal_raises_on_an_uncertified_answer():
 def test_the_version_is_a_string():
     assert isinstance(gmaxflow.version(), str)
     assert gmaxflow.version()
+
+
+def test_labels_outside_ascii_survive_the_native_boundary():
+    answer = gmaxflow.solve(
+        {
+            "source": "São Paulo",
+            "sink": "東京",
+            "edges": [{"from": "São Paulo", "to": "東京", "capacity": 3, "multiplier": 0.5}],
+        }
+    )
+    assert answer["max_flow"] == pytest.approx(1.5)
+    assert answer["paths"][0]["nodes"] == ["São Paulo", "東京"]
+
+
+def test_fat_path_and_plain_augmentation_agree():
+    graph = {
+        "source": 0,
+        "sink": 4,
+        "edges": [
+            [0, 1, 100, 0.9], [1, 4, 100, 0.9],
+            [0, 2, 1, 0.99], [2, 4, 1, 0.99],
+            [0, 3, 10, 0.95], [3, 4, 10, 0.95],
+            [1, 3, 5, 1.2], [3, 2, 5, 1.1],
+        ],
+    }
+    scaled = gmaxflow.solve(graph)
+    plain = gmaxflow.solve(graph, fat_path=False)
+    unrounded = gmaxflow.solve(graph, gain_scaling=False)
+    assert scaled["optimal"] and plain["optimal"] and unrounded["optimal"]
+    assert scaled["max_flow"] == pytest.approx(plain["max_flow"], rel=1e-9)
+    assert unrounded["max_flow"] == pytest.approx(plain["max_flow"], rel=1e-9)
+    assert scaled["stats"]["scaling_phases"] >= 1
+    assert plain["stats"]["scaling_phases"] == 0
+
+
+def test_the_native_solver_version_matches_the_package():
+    from importlib import metadata
+
+    try:
+        installed = metadata.version("generalized-maxflow")
+    except metadata.PackageNotFoundError:
+        pytest.skip("running from a checkout, not an installed distribution")
+    assert gmaxflow.version() == installed
+
+
+@pytest.mark.skipif(
+    not __import__("os").environ.get("GMAXFLOW_TEST_INSTALLED"),
+    reason="set GMAXFLOW_TEST_INSTALLED=1 to check the installed wheel itself",
+)
+def test_the_installed_package_carries_its_own_native_library():
+    import os
+
+    from gmaxflow import _native
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    checkout = os.path.normcase(os.path.join(os.path.dirname(here), "python"))
+    package = os.path.normcase(os.path.dirname(os.path.abspath(gmaxflow.__file__)))
+    assert not package.startswith(checkout), "imported the checkout, not the wheel"
+    assert os.path.isfile(_native.library_path())

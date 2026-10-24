@@ -74,6 +74,13 @@ Every push also builds it in CI, downloadable as the `demo-site` artifact of the
 pip install generalized-maxflow
 ```
 
+The wheels are tagged `py3-none-<platform>`: the solver is a plain C library
+loaded through `ctypes`, never linked against libpython, so one wheel per OS and
+CPU serves every CPython from 3.8 up, the free-threaded builds, and PyPy. There
+are wheels for Linux (x86-64 and aarch64, glibc and musl), macOS (x86-64 and
+arm64) and Windows (x86-64 and ARM64); anywhere else pip builds the sdist, which
+needs CMake and a C++17 compiler. The solve releases the GIL.
+
 ```bash
 npm install generalized-maxflow   # WebAssembly build, browser and Node
 ```
@@ -156,6 +163,8 @@ finite and strictly positive.
 | `collect_paths` | `true` | set false to drop the `paths` array and save memory |
 | `cancel_generating_cycles` | `true` | set false to reject amplifying inputs instead of solving them |
 | `use_potentials` | `true` | set false to force the slow reference search (for cross-checking) |
+| `fat_path` | `true` | run the Tardos–Wayne Fat-Path scaling phases; false is plain highest-gain augmentation |
+| `gain_scaling` | `true` | round gains to powers of $(1+\xi)^{1/n}$ inside those phases |
 | `pretty` | `false` | indent the output |
 
 ## Output
@@ -175,7 +184,8 @@ pushed flow *back* over an edge to re-route earlier flow. A `kind` of
 more than one, together with the route carrying the flow it manufactured.
 
 `certificate` is the proof the answer is maximum, and `stats` reports iterations,
-searches, a timing breakdown by phase and the solver's own memory footprint.
+searches, the Fat-Path phases and augmentations, the cycles cancelled, a timing
+breakdown by phase and the solver's own memory footprint.
 
 ---
 
@@ -266,8 +276,10 @@ is a negative-cost cycle. The solver works in this log space throughout, which
 also stops long lossy chains from underflowing: fifty halvings give
 $\gamma(P)=2^{-50}$, and a solver multiplying doubles loses such paths.
 
-The loop is Onaga's: while a residual $s\to t$ path exists, augment along one of
-maximum gain. The choice of *maximum* is what makes it correct.
+Onaga's loop: while a residual $s\to t$ path exists, augment along one of
+maximum gain. The choice of *maximum* is what makes it correct. It is the exact
+finish of this solver; most of the flow is first placed by the Fat-Path phases
+of section 8, which choose paths by capacity as well as gain.
 
 > **Theorem (Onaga, 1966).** If the residual network contains no
 > flow-generating cycle, then augmenting along a maximum-gain path leaves it
@@ -363,39 +375,115 @@ conservation error and capacity violation.
 `tools/gap_probe.py` performs the same two checks in Python from the reported
 edge flows, sharing no code with the solver.
 
-## 8. Complexity, and what is not implemented
+## 8. Fat-Path with gain-scaling
 
-Each search is $O(m\log n)$ with early exit. The number of augmentations is the
-honest weak point: Onaga's algorithm is not strongly polynomial — it *"may run
-in exponential time (or may not even terminate for irrational inputs)"* — and
-cycle cancellation on top is a greedy loop whose only guarantee is that each
-step strictly increases the delivered flow and that the stopping condition is
-exact. There is a limit, `1000 + 20(n+m)` by default, and reaching it is
-reported as `iteration_limit` rather than dressed up as an answer.
+Onaga's loop has no useful bound on the number of augmentations: highest-gain
+first will happily spend an augmentation on a path that carries $10^{-9}$. The
+solver therefore runs Tardos and Wayne's *Rounded Fat-Path* (IPCO 1998, §6)
+first, and leaves Onaga only the last scrap of the gap.
 
-The algorithms with real bounds are not implemented here:
+**Fat paths.** Write $\mu(v)$ for the inverse of the best gain from $v$ to the
+sink, the *canonical label*. An arc is $\delta$-*fat* when it can raise the
+sink's excess by $\delta$, i.e. $r(a)/\mu(v)\ge\delta$, and a path is fat
+when every arc is. With potentials, $\mu(v)=e^{\pi(t)-\pi(v)}$, so the test is
+one comparison per arc against a per-node threshold. The phases are:
+
+$$\begin{aligned}
+&\Delta \leftarrow \Delta_0 \ge \mathrm{OPT}-|f| \\
+&\textbf{repeat}\\
+&\quad \textsc{CancelCycles} \quad\text{(the relabelled network becomes lossy)}\\
+&\quad \textsc{FatAugmentations}(\Delta/2m) \quad\text{(highest-gain fat paths until none)}\\
+&\quad \Delta \leftarrow \Delta/2\\
+&\textbf{until } \Delta \text{ is below the tolerance}
+\end{aligned}$$
+
+Each fat augmentation either delivers $\delta=\Delta/2m$ or empties its source,
+so a phase makes at most $n+2m$ of them, and the discrepancy halves per phase:
+$O(\log(n/\xi))$ phases for a $\xi$-optimal flow. $\Delta_0$ is the cheaper
+of two cuts, what the sink's residual in-arcs can deliver and the relabelled
+capacity out of the source; a phase in which nothing fat exists jumps $\Delta$
+straight down to the fattest arc the search had to skip, since every path leaves
+the fat subnetwork through one.
+
+**Canonical labels.** Every phase starts from exact labels: one Dijkstra
+*backwards* from the sink over the reduced costs gives $D(v)$, and
+$\pi(v)\leftarrow\pi(v)-D(v)$ makes $e^{\pi(v)-\pi(t)}$ the true best gain to
+the sink while keeping every reduced cost non-negative (it is the triangle
+inequality $D(v)\le c_\pi(v,w)+D(w)$). Reading fatness off stale potentials
+instead — which on a lossy network claim a gain of one everywhere — filled paths
+that delivered almost nothing and cost 99 000 cycle cancellations on a 1 000-node
+instance.
+
+**Gain-scaling.** Rounding each gain down to a power of $b=(1+\xi)^{1/n}$ is
+rounding its cost up to a multiple of $q=\ln b$. In the relabelled lossy network
+those costs are the reduced costs, so the rounded network is a Dijkstra on the
+integer keys $\lceil c_\pi(a)/q\rceil$. A search on those keys leaves every
+reduced cost above $-q$ — never below, however many searches run — so the phases
+keep $q$-optimal potentials, and CancelCycles need only remove cycles whose total
+log-gain exceeds $q$: exactly the cycles a sweep that ignores improvements
+smaller than $q$ cannot settle around. $\xi$ shrinks with $\Delta$ as
+$\xi=\min(\tfrac12,\Delta/\Delta_0)$. Rounding costs at most a factor
+$b^{|P|}\le 1+\xi$ on any path, which is Tardos and Wayne's Theorem 4.
+
+**CancelCycles.** After a phase the potentials are valid on every arc except the
+thin ones the phase skipped, and every generating cycle passes through one of
+those. For a violating arc $(v,w)$ the most generating cycle through it is the
+arc plus the highest-gain $w\to v$ path over the certified arcs — one early-exit
+Dijkstra, after whose potential update the arc's reduced cost *is* the cycle's
+log-loss. Cancelling through violating arcs first, and only then running the
+label-correcting sweep for whatever two violating arcs share, cut a 3 200-node
+amplifying instance from 5 878 cancellations and 15.9 s to 313 and 1.3 s. A
+cancelled cycle's excess is routed to the sink by the highest-gain path over the
+certified arcs, not the fewest hops: the excess belongs on the rest of the path
+it was rerouted from, and an arbitrary route creates new cycles as fast as they
+are removed.
+
+**Two departures from the paper.** Both come from reporting a flow that conserves
+at every node. The paper keeps its flow in the rounded network and
+*interprets* it in the original at the end, which strands excess at interior
+nodes; here a path chosen in the rounded network is pushed with its true gains,
+so it delivers at least what the rounded network promised and nothing is
+stranded. And the paper's CancelCycles leaves each cycle's excess on the cycle
+for the next augmentations to collect; here it is carried to the sink with the
+cycle, as a generalized augmenting path. The paper's exact algorithm ends by
+rounding a $B^{-4m}$-optimal flow, which means nothing in floating point; instead
+the phases stop once $\Delta$ is below the tolerance and Onaga's loop finishes
+on the true gains, from a flow already within the last $\Delta$ of optimal.
+`fat_path: false` and `gain_scaling: false` turn each layer off, and the tests
+check all three variants against each other.
+
+## 9. Complexity
+
+Each search is $O(m\log n)$ with early exit. The Fat-Path phases bound the
+augmentations at $n+2m$ per phase over $O(\log(n/\xi))$ phases, which is what
+replaces Onaga's unbounded count — Onaga's algorithm alone *"may run in
+exponential time (or may not even terminate for irrational inputs)"*. What the
+implementation does not inherit is the paper's bound on CancelCycles, which
+rests on Goldberg–Tarjan cancel-and-tighten over integer costs; the
+violating-arc Dijkstra and the label-correcting sweep here measure faster on
+every input tried but carry no such guarantee, and neither does the exact
+finish. There is a limit, `1000 + 20(n+m)` iterations by default, and reaching
+it is reported as `iteration_limit` rather than dressed up as an answer.
 
 | | bound | note |
 | --- | --- | --- |
 | Goldberg–Plotkin–Tardos 1991 | first polynomial combinatorial | cancels *all* generating cycles as a batch |
 | Goldfarb–Jin–Orlin 1997 | $\tilde O(m^3\log B)$ | capacity scaling, highest-gain paths |
-| Tardos–Wayne 1998 | matches best known | Fat-Path with gain-scaling, much simpler than Radzik's |
+| **Tardos–Wayne 1998** | matches best known | **implemented here** (section 8): Fat-Path with gain-scaling |
 | Radzik 2004 | $\tilde O(m^2 n\log B)$ | best known weakly polynomial |
 | Végh 2016 | strongly polynomial | first such result; continuous scaling |
 | Olver–Végh 2017 | $O((m+n\log n)\,mn\log(n^2/m))$ | simpler and faster strongly polynomial |
 
 The strongly polynomial results are landmarks but not implementation guides: at
 $n=10^3$, $m=5\times10^3$ the Olver–Végh bound is on the order of $10^{11}$
-operations, far above what augmenting paths cost in practice. The genuinely
-promising unimplemented direction is Δ-scaling (Fat-Path), which bounds
-augmentations per phase by $n+\mathrm{OPT}/\Delta$, and the preflow-push variant
-in the same paper.
+operations, far above what augmenting paths cost in practice. The preflow-push
+variant in the Tardos–Wayne paper is the natural next step.
 
 Two notes on floating point. `epsilon` is relative, scaled by the largest finite
 capacity, so "optimal" means optimal to that tolerance. An arc is retired from
 the search only when nothing at all can move through it.
 
-## 9. On concurrency
+## 10. On concurrency
 
 The breadth-first sweep is the one phase that fans out naturally, so it was
 built multi-threaded, measured, and then removed. The measurements:
@@ -435,17 +523,26 @@ AMD, single core, release build. `layered` is $\sqrt n$ layers of $\sqrt n$
 nodes — deep graphs where shortest paths are hundreds of arcs long; `uniform` is
 a random graph.
 
-| instance | nodes | edges | time | solver memory |
-| --- | --- | --- | --- | --- |
-| lossy, layered | 15 878 | 63 252 | 1.6 s | 5 MB |
-| lossy, uniform | 16 000 | 80 000 | 0.10 s | 9 MB |
-| lossy, uniform | 100 000 | 500 000 | 0.48 s | 62 MB |
-| lossy, uniform | 250 000 | 1 250 000 | 2.3 s | 138 MB |
-| amplifying, uniform | 3 200 | 16 000 | 0.23 s | 1 MB |
+| instance | nodes | edges | Fat-Path | Onaga only | solver memory |
+| --- | --- | --- | --- | --- | --- |
+| lossy, layered | 40 002 | 159 600 | **9.2 s** | 15.2 s | 18 MB |
+| lossy, layered | 15 878 | 63 252 | **1.03 s** | 1.59 s | 7 MB |
+| lossy, uniform | 16 000 | 80 000 | 0.10 s | 0.11 s | 6 MB |
+| lossy, uniform | 100 000 | 500 000 | 0.78 s | **0.49 s** | 40 MB |
+| lossy, uniform | 250 000 | 1 250 000 | 2.2 s | 2.5 s | 100 MB |
+| amplifying, layered | 3 194 | 12 656 | 1.33 s | **1.15 s** | 1 MB |
+| amplifying, uniform | 3 200 | 16 000 | 0.35 s | 0.36 s | 1 MB |
 
-Against the same benchmark before the potentials work: the 16k layered case was
-11.07 s and the 3 200-node amplifying case was **588 s**. Run it yourself with
-`build/gmf_bench`.
+"Onaga only" is `fat_path: false`. Fat-Path pays off where paths are long and
+many: on the deep layered networks it fills fat paths with smaller searches, and
+the margin grows with size. On shallow random graphs a handful of highest-gain
+augmentations already finish the job and the phases are overhead — a backward
+Dijkstra and a potential repair each — and on amplifying inputs much of the work
+is the input's own cycles, which both variants cancel the same way. Against the
+same benchmark before the potentials work: the 16k layered case was 11.07 s and
+the 3 200-node amplifying case was **588 s**. Run it yourself with
+`build/gmf_bench`, or `gmf_bench layered 16000 4 0.95 onaga` (or `exact`, for
+Fat-Path without the gain rounding) to compare.
 
 The layout is built for the inner loop. Arcs are renumbered so those leaving a
 node are contiguous, and the relaxation reads head, residual and cost straight
@@ -471,6 +568,9 @@ one array at 16 bytes each; `collect_paths: false` drops it entirely.
 - The Dijkstra engine is checked against the label-correcting reference
   (`use_potentials: false`) on random instances, and every answer is checked for
   capacity feasibility and flow conservation.
+- Fat-Path with gain-scaling, Fat-Path on exact gains and plain Onaga
+  (`fat_path: false`) are checked against each other on 240 random instances
+  across both regimes.
 - `tests/test_regression.cpp` holds the instances that once produced a wrong
   answer, each with the optimum from the linear program and a note on the defect
   it caught.

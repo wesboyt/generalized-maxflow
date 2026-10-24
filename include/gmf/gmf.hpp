@@ -4,11 +4,14 @@
 // into the arc at u consumes x units of capacity and delivers g * x units at v.
 // The solver maximises the amount delivered at the sink.
 //
-// The method is Onaga's highest-gain augmenting path algorithm, run with node
-// potentials so each augmentation costs one early-exit Dijkstra rather than a
-// full label-correcting sweep, extended with cancellation of flow-generating
-// cycles so that gain-amplifying inputs are handled too. See docs/ALGORITHM.md
-// for the derivation and the optimality certificate every result carries.
+// The method is Tardos and Wayne's Rounded Fat-Path (1998): capacity scaling
+// over Delta-phases, each of which cancels the flow-generating cycles and then
+// augments along highest-gain paths that can each deliver at least Delta/(2m)
+// to the sink, with the gains rounded to powers of b = (1 + xi)^(1/n) so the
+// path search runs on integer costs. Once the phases have closed the gap, an
+// exact Onaga highest-gain finish removes the rounding error and the solver
+// certifies the result. Every search is an early-exit Dijkstra over node
+// potentials. See the README for the derivation and the certificate.
 #pragma once
 
 #include <cstddef>
@@ -50,6 +53,14 @@ struct Options {
   // forces the label-correcting engine for every search, which is far slower
   // and is here so the two engines can be checked against each other.
   bool use_potentials = true;
+  // Run the Fat-Path capacity-scaling phases before the exact finish. Turning
+  // this off leaves plain highest-gain augmentation (Onaga), which has no
+  // polynomial bound on the number of augmentations.
+  bool fat_path = true;
+  // Round the gains to powers of b = (1 + xi)^(1/n) inside each Fat-Path
+  // phase, with xi shrinking alongside Delta. Off means the phases search on
+  // exact gains.
+  bool gain_scaling = true;
 };
 
 // One traversal of one residual arc inside an augmentation. Only what cannot be
@@ -129,11 +140,18 @@ struct Stats {
   long long arc_scans = 0;
   long long settled_nodes = 0;
 
+  // Fat-Path: the Delta-phases run, the augmentations made inside them, and the
+  // flow-generating cycles cancelled anywhere in the solve.
+  long long scaling_phases = 0;
+  long long fat_augmentations = 0;
+  long long cycles_cancelled = 0;
+
   // Wall-clock seconds, so the dominant phase is visible rather than guessed.
   double seconds = 0.0;
   double path_search_seconds = 0.0;
   double cycle_search_seconds = 0.0;
   double push_seconds = 0.0;
+  double scaling_seconds = 0.0;  // wall time inside the Fat-Path phases
   // Breakdown of the potential/cycle phase, so it is clear which part of it is
   // worth parallelising.
   double reach_seconds = 0.0;

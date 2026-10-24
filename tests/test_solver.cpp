@@ -278,6 +278,68 @@ TEST(the_two_search_engines_find_the_same_maximum) {
   }
 }
 
+// Fat-Path with gain-scaling against plain highest-gain augmentation, and the
+// rounded phases against unrounded ones, across both regimes. The three share
+// the exact finish and the certificate but not the route to them.
+TEST(fat_path_agrees_with_plain_highest_gain_augmentation) {
+  std::mt19937 engine(19980601);
+  for (int trial = 0; trial < 240; ++trial) {
+    reference::RandomSpec spec;
+    spec.num_nodes = 6 + static_cast<int>(engine() % 30);
+    spec.num_edges = 2 * spec.num_nodes + static_cast<int>(engine() % 50);
+    spec.min_multiplier = trial % 2 == 0 ? 0.2 : 0.5;
+    spec.max_multiplier = trial % 2 == 0 ? 1.0 : 1.8;
+    const gmf::Problem problem = reference::random_problem(engine, spec);
+    const std::string where = "trial " + std::to_string(trial);
+
+    gmf::Options onaga;
+    onaga.fat_path = false;
+    gmf::Options unrounded;
+    unrounded.gain_scaling = false;
+    const gmf::Result scaled = gmf::solve(problem);
+    const gmf::Result plain = gmf::solve(problem, onaga);
+    const gmf::Result exact_gains = gmf::solve(problem, unrounded);
+
+    if (plain.status == "unbounded") {
+      CHECK_MESSAGE(scaled.status == "unbounded", where + ": " + scaled.status);
+      continue;
+    }
+    CHECK_MESSAGE(scaled.optimal, where + ": " + scaled.status + " " + scaled.message);
+    CHECK_MESSAGE(exact_gains.optimal, where + ": " + exact_gains.status);
+    CHECK_MESSAGE(plain.optimal, where + ": " + plain.status);
+    CHECK_MESSAGE(test::near(scaled.max_flow, plain.max_flow, 1e-7),
+                  where + ": fat-path " + std::to_string(scaled.max_flow) + " vs onaga " +
+                      std::to_string(plain.max_flow));
+    CHECK_MESSAGE(test::near(exact_gains.max_flow, plain.max_flow, 1e-7),
+                  where + ": unrounded fat-path " + std::to_string(exact_gains.max_flow) +
+                      " vs onaga " + std::to_string(plain.max_flow));
+    const reference::FeasibilityReport report = reference::check_feasible(problem, scaled);
+    CHECK_MESSAGE(report.capacities_respected, where);
+    CHECK_MESSAGE(report.conserved, where + ": conservation error " +
+                                        std::to_string(report.max_conservation_error));
+  }
+}
+
+// The phases must actually do the work on an ordinary lossy network, not
+// hand everything to the exact finish.
+TEST(fat_path_phases_carry_the_flow) {
+  std::vector<gmf::EdgeInput> edges;
+  // Three parallel two-arc routes of different gain and capacity, so the fat
+  // and the highest-gain choices differ.
+  edges.push_back(edge(0, 1, 100.0, 0.9));
+  edges.push_back(edge(1, 4, 100.0, 0.9));
+  edges.push_back(edge(0, 2, 1.0, 0.99));
+  edges.push_back(edge(2, 4, 1.0, 0.99));
+  edges.push_back(edge(0, 3, 10.0, 0.95));
+  edges.push_back(edge(3, 4, 10.0, 0.95));
+  const gmf::Problem problem = make_problem(5, 0, 4, edges);
+  const gmf::Result result = gmf::solve(problem);
+  CHECK(result.optimal);
+  CHECK(test::near(result.max_flow, 100 * 0.81 + 1 * 0.9801 + 10 * 0.9025, 1e-9));
+  CHECK(result.stats.scaling_phases >= 1);
+  CHECK(result.stats.fat_augmentations >= 3);
+}
+
 TEST(paths_can_be_left_uncollected) {
   const gmf::Problem problem =
       make_problem(3, 0, 2, {edge(0, 1, 4.0, 0.5), edge(1, 2, 4.0, 0.5)});
