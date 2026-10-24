@@ -1,9 +1,12 @@
 name: demo
 
-# Builds the WebAssembly solver and publishes the browser demo to GitHub Pages.
-# Pages has to be enabled once for the repository, under Settings -> Pages, with
-# the source set to "GitHub Actions". Until then this job will fail at the
-# deploy step while still leaving the built demo as a downloadable artifact.
+# Builds the WebAssembly solver and the browser demo on every push, and
+# publishes it to GitHub Pages when run manually.
+#
+# To publish: enable Pages once under Settings -> Pages with the source set to
+# "GitHub Actions" (a private repository needs a paid plan for this), then run
+# this workflow from the Actions tab. Pushes only build, so they stay green
+# whether or not Pages is on.
 
 on:
   push:
@@ -51,14 +54,21 @@ jobs:
           name: demo-site
           path: site
 
+      # Publishing is opt-in: GitHub Pages has to be turned on for the
+      # repository first, and it is not available for private repositories on
+      # the free plan. Until then every push still builds the demo and leaves it
+      # as the downloadable `demo-site` artifact above, and a push stays green.
       - uses: actions/configure-pages@v5
+        if: github.event_name == 'workflow_dispatch'
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'workflow_dispatch'
         with:
           path: site
 
   deploy:
     name: publish to Pages
     needs: build
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
