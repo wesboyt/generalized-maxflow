@@ -103,12 +103,16 @@ void run(const std::string& shape, int nodes, int degree, double max_multiplier,
   std::printf(
       "%-8s n=%-7d m=%-8zu %-16s flow=%-14.6g wall=%7.3fs  path=%6.3fs cycle=%6.3fs "
       "push=%6.3fs | iters=%-7lld paths=%-7lld cycles=%-6lld relax=%-12lld dij=%-7lld "
-      "lc=%-6lld steps=%-9zu mem=%zuMB\n",
+      "lc=%-6lld scans=%-12lld steps=%-9zu work=%-5zuMB steps=%-4zuMB total=%zuMB\n",
       shape.c_str(), problem.num_nodes, problem.edges.size(), result.status.c_str(),
       result.max_flow, wall, result.stats.path_search_seconds, result.stats.cycle_search_seconds,
       result.stats.push_seconds, result.stats.iterations, result.stats.path_searches,
       result.stats.cycle_searches, result.stats.relaxations, result.stats.dijkstra_searches,
-      result.stats.label_correcting_searches, steps,
+      result.stats.label_correcting_searches, result.stats.arc_scans, steps,
+      result.stats.working_bytes / (1024 * 1024),
+      (result.steps.capacity() * sizeof(gmf::Step) +
+       result.augmentations.capacity() * sizeof(gmf::Augmentation)) /
+          (1024 * 1024),
       estimate_bytes(problem, result) / (1024 * 1024));
   std::fflush(stdout);
 }

@@ -13,6 +13,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Link-time optimisation for the optimised configurations, where supported. The
+# solver is one translation unit calling into another, so cross-module inlining
+# of the inner loops is worth having.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT GMF_IPO_SUPPORTED OUTPUT GMF_IPO_MESSAGE)
+if(GMF_IPO_SUPPORTED)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+endif()
+
 option(GMF_BUILD_CLI "Build the gmaxflow command line tool" ON)
 option(GMF_BUILD_TESTS "Build the test suite" ON)
 option(GMF_BUILD_BENCH "Build the benchmark harness" ON)

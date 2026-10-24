@@ -133,6 +133,8 @@ struct Stats {
   long long heap_pops = 0;
   long long blocked_arcs = 0;
   long long cycle_extract_failures = 0;
+  long long arc_scans = 0;
+  long long settled_nodes = 0;
 
   // Wall-clock seconds, so the dominant phase is visible rather than guessed.
   double seconds = 0.0;

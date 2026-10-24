@@ -67,10 +67,10 @@ struct Layout {
   // Per arc, cold: read only when pushing.
   std::vector<int32_t> twin;
   std::vector<int32_t> code;  // edge index in the high bits, direction in bit 0
-  // Per edge.
+  // Per edge. The multiplier and capacity are not copied here: they live in the
+  // caller's Problem, which outlives the solve, and are only read on the push
+  // path. At 16 bytes per edge the copy was a sixth of the whole footprint.
   std::vector<int32_t> forward_arc;
-  std::vector<double> gain;
-  std::vector<double> capacity;
   std::vector<double> flow;
   // One bit per arc; an arc is retired only when nothing can move through it.
   std::vector<uint64_t> blocked;
@@ -79,19 +79,74 @@ struct Layout {
     return arc_begin.capacity() * sizeof(int32_t) + head.capacity() * sizeof(int32_t) +
            residual.capacity() * sizeof(double) + cost.capacity() * sizeof(double) +
            twin.capacity() * sizeof(int32_t) + code.capacity() * sizeof(int32_t) +
-           forward_arc.capacity() * sizeof(int32_t) + gain.capacity() * sizeof(double) +
-           capacity.capacity() * sizeof(double) + flow.capacity() * sizeof(double) +
+           forward_arc.capacity() * sizeof(int32_t) + flow.capacity() * sizeof(double) +
            blocked.capacity() * sizeof(uint64_t);
   }
 };
+
+// Everything the path search reads per node, in one place. The relaxation loop
+// touches a node's distance, potential, stamps and parent together, and keeping
+// them in separate arrays cost four random memory streams per arc scanned --
+// which is what the inner loop spends its time on once the graph no longer fits
+// in cache.
+struct NodeState {
+  double distance = 0.0;
+  double potential = 0.0;
+  uint32_t distance_stamp = 0;
+  uint32_t settled_stamp = 0;
+  int32_t parent = -1;
+  int32_t padding = 0;
+};
+static_assert(sizeof(NodeState) == 32, "NodeState should stay at two per cache line");
 
 struct HeapEntry {
   double key;
   int32_t node;
 };
 
-struct HeapGreater {
-  bool operator()(const HeapEntry& lhs, const HeapEntry& rhs) const { return lhs.key > rhs.key; }
+// A 4-ary heap. The path search pushes once per improving relaxation, which on
+// a large network is millions of sifts, and a 4-ary heap is about half as deep
+// as a binary one while still comparing only a handful of siblings per level.
+class MinHeap {
+ public:
+  void clear() { entries_.clear(); }
+  bool empty() const { return entries_.empty(); }
+  std::size_t capacity() const { return entries_.capacity(); }
+
+  void push(double key, int32_t node) {
+    entries_.push_back({key, node});
+    std::size_t index = entries_.size() - 1;
+    while (index > 0) {
+      const std::size_t parent = (index - 1) >> 2;
+      if (entries_[parent].key <= entries_[index].key) break;
+      std::swap(entries_[parent], entries_[index]);
+      index = parent;
+    }
+  }
+
+  HeapEntry pop() {
+    const HeapEntry top = entries_.front();
+    entries_.front() = entries_.back();
+    entries_.pop_back();
+    const std::size_t size = entries_.size();
+    std::size_t index = 0;
+    while (true) {
+      const std::size_t first = index * 4 + 1;
+      if (first >= size) break;
+      std::size_t best = first;
+      const std::size_t last = std::min(first + 4, size);
+      for (std::size_t child = first + 1; child < last; ++child) {
+        if (entries_[child].key < entries_[best].key) best = child;
+      }
+      if (entries_[index].key <= entries_[best].key) break;
+      std::swap(entries_[index], entries_[best]);
+      index = best;
+    }
+    return top;
+  }
+
+ private:
+  std::vector<HeapEntry> entries_;
 };
 
 class Solver {
@@ -229,8 +284,6 @@ class Solver {
     net_.twin.resize(arcs);
     net_.code.resize(arcs);
     net_.forward_arc.resize(edges);
-    net_.gain.resize(edges);
-    net_.capacity.resize(edges);
     net_.flow.assign(edges, 0.0);
     net_.blocked.assign((arcs + 63) / 64, 0);
 
@@ -238,8 +291,6 @@ class Solver {
     for (std::size_t i = 0; i < edges; ++i) {
       const EdgeInput& edge = problem_.edges[i];
       const double log_gain = std::log(edge.multiplier);
-      net_.gain[i] = edge.multiplier;
-      net_.capacity[i] = edge.capacity;
 
       const int32_t forward = cursor[static_cast<std::size_t>(edge.from)]++;
       const int32_t backward = cursor[static_cast<std::size_t>(edge.to)]++;
@@ -260,11 +311,7 @@ class Solver {
 
     // Stamped scratch: a search touches only the nodes it reaches, so nothing
     // here is cleared between iterations.
-    distance_.assign(nodes, 0.0);
-    distance_stamp_.assign(nodes, 0);
-    settled_stamp_.assign(nodes, 0);
-    parent_.assign(nodes, -1);
-    potential_.assign(nodes, 0.0);
+    node_.assign(nodes, NodeState());
     reaches_sink_.assign(nodes, 0);
 
     thread_count_ = 1;
@@ -280,11 +327,7 @@ class Solver {
 
   std::size_t working_bytes() const {
     std::size_t bytes = net_.bytes();
-    bytes += distance_.capacity() * sizeof(double);
-    bytes += distance_stamp_.capacity() * sizeof(uint32_t);
-    bytes += settled_stamp_.capacity() * sizeof(uint32_t);
-    bytes += parent_.capacity() * sizeof(int32_t);
-    bytes += potential_.capacity() * sizeof(double);
+    bytes += node_.capacity() * sizeof(NodeState);
     bytes += reaches_sink_.capacity();
     bytes += heap_.capacity() * sizeof(HeapEntry);
     bytes += settled_.capacity() * sizeof(int32_t);
@@ -308,8 +351,14 @@ class Solver {
   }
   int twin_of(int arc) const { return net_.twin[static_cast<std::size_t>(arc)]; }
   int tail_of(int arc) const { return net_.head[static_cast<std::size_t>(twin_of(arc))]; }
+  double edge_gain(int edge) const {
+    return problem_.edges[static_cast<std::size_t>(edge)].multiplier;
+  }
+  double edge_capacity(int edge) const {
+    return problem_.edges[static_cast<std::size_t>(edge)].capacity;
+  }
   double gain_of(int arc) const {
-    const double gain = net_.gain[static_cast<std::size_t>(edge_of(arc))];
+    const double gain = edge_gain(edge_of(arc));
     return is_forward(arc) ? gain : 1.0 / gain;
   }
 
@@ -331,7 +380,7 @@ class Solver {
   // Flow is tracked per edge; both residuals follow from it.
   void set_edge_flow(int edge, double flow) {
     const std::size_t index = static_cast<std::size_t>(edge);
-    const double capacity = net_.capacity[index];
+    const double capacity = edge_capacity(edge);
     if (flow < 0.0 && flow > -capacity_epsilon_) flow = 0.0;
     if (flow > capacity && flow < capacity + capacity_epsilon_) flow = capacity;
     net_.flow[index] = flow;
@@ -339,7 +388,7 @@ class Solver {
     net_.residual[static_cast<std::size_t>(forward)] =
         std::isfinite(capacity) ? capacity - flow : capacity;
     net_.residual[static_cast<std::size_t>(net_.twin[static_cast<std::size_t>(forward)])] =
-        flow * net_.gain[index];
+        flow * edge_gain(edge);
   }
 
   // ---- reachability --------------------------------------------------------
@@ -352,6 +401,7 @@ class Solver {
   // way in. It is therefore recomputed only alongside the potentials.
   void compute_reaches_sink() {
     std::fill(reaches_sink_.begin(), reaches_sink_.end(), static_cast<char>(0));
+    mask_is_full_ = false;
     queue_.clear();
     reaches_sink_[static_cast<std::size_t>(problem_.sink)] = 1;
     queue_.push_back(problem_.sink);
@@ -369,9 +419,13 @@ class Solver {
         }
       }
     }
+    // When every node is in, the per-arc membership test is pure overhead.
+    mask_is_full_ = queue_.size() == static_cast<std::size_t>(num_nodes_);
   }
 
-  bool in_mask(int node) const { return reaches_sink_[static_cast<std::size_t>(node)] != 0; }
+  bool in_mask(int node) const {
+    return mask_is_full_ || reaches_sink_[static_cast<std::size_t>(node)] != 0;
+  }
 
   // ---- potentials and cycle detection -------------------------------------
 
@@ -503,7 +557,7 @@ class Solver {
     for (int node = 0; node < num_nodes_; ++node) {
       if (!in_mask(node)) continue;
       const double label = label_[static_cast<std::size_t>(node)];
-      if (label != kNegInf) potential_[static_cast<std::size_t>(node)] = -label;
+      if (label != kNegInf) node_[static_cast<std::size_t>(node)].potential = -label;
     }
     potentials_valid_ = true;
     if (stats_ != nullptr) ++stats_->potential_repairs;
@@ -528,7 +582,7 @@ class Solver {
     }
     ++colour_epoch_;
     for (int start = 0; start < num_nodes_; ++start) {
-      if (parent_[static_cast<std::size_t>(start)] < 0) continue;
+      if (node_[static_cast<std::size_t>(start)].parent < 0) continue;
       if (colour_stamp_[static_cast<std::size_t>(start)] == colour_epoch_) continue;
       walk_stack_.clear();
       int node = start;
@@ -536,7 +590,7 @@ class Solver {
         colour_stamp_[static_cast<std::size_t>(node)] = colour_epoch_;
         colour_[static_cast<std::size_t>(node)] = 1;  // on the current chain
         walk_stack_.push_back(node);
-        const int arc = parent_[static_cast<std::size_t>(node)];
+        const int arc = node_[static_cast<std::size_t>(node)].parent;
         node = arc < 0 ? -1 : tail_of(arc);
       }
       const bool closed = node >= 0 &&
@@ -569,7 +623,7 @@ class Solver {
         const double candidate = base - net_.cost[static_cast<std::size_t>(a)];
         if (candidate > label_[static_cast<std::size_t>(next)] + log_epsilon_) {
           label_[static_cast<std::size_t>(next)] = candidate;
-          parent_[static_cast<std::size_t>(next)] = a;
+          node_[static_cast<std::size_t>(next)].parent = a;
           ++relaxations;
           if (++since_check >= check_interval) {
             since_check = 0;
@@ -707,7 +761,7 @@ class Solver {
     stats.relaxations += relaxations.load();
     for (std::size_t i = 0; i < nodes; ++i) {
       label_[i] = atomic_label_[i].load(std::memory_order_relaxed);
-      parent_[i] = atomic_parent_[i].load(std::memory_order_relaxed);
+      node_[i].parent = atomic_parent_[i].load(std::memory_order_relaxed);
     }
     return true;
   }
@@ -718,7 +772,7 @@ class Solver {
   std::vector<int> find_cycle_by_rounds() {
     const std::size_t nodes = static_cast<std::size_t>(num_nodes_);
     label_.assign(nodes, kNegInf);
-    std::fill(parent_.begin(), parent_.end(), -1);
+    for (NodeState& state : node_) state.parent = -1;
     for (int node = 0; node < num_nodes_; ++node) {
       if (in_mask(node)) label_[static_cast<std::size_t>(node)] = 0.0;
     }
@@ -737,7 +791,7 @@ class Solver {
           const double candidate = base - net_.cost[static_cast<std::size_t>(a)];
           if (candidate > label_[static_cast<std::size_t>(next)] + log_epsilon_) {
             label_[static_cast<std::size_t>(next)] = candidate;
-            parent_[static_cast<std::size_t>(next)] = a;
+            node_[static_cast<std::size_t>(next)].parent = a;
             changed = true;
           }
         }
@@ -776,7 +830,7 @@ class Solver {
     for (int step = 0; step <= num_nodes_ + 1; ++step) {
       if (stamp_at_[static_cast<std::size_t>(node)] == stamp_) break;
       stamp_at_[static_cast<std::size_t>(node)] = stamp_;
-      const int arc = parent_[static_cast<std::size_t>(node)];
+      const int arc = node_[static_cast<std::size_t>(node)].parent;
       if (arc < 0) return {};  // This chain leaves the parent graph; try another.
       node = tail_of(arc);
     }
@@ -786,7 +840,7 @@ class Solver {
     const int anchor = node;
     int walker = anchor;
     do {
-      const int arc = parent_[static_cast<std::size_t>(walker)];
+      const int arc = node_[static_cast<std::size_t>(walker)].parent;
       if (arc < 0) return {};
       cycle.push_back(arc);
       walker = tail_of(arc);
@@ -810,14 +864,14 @@ class Solver {
   // ---- path search ---------------------------------------------------------
 
   double distance_of(int node) const {
-    return distance_stamp_[static_cast<std::size_t>(node)] == search_stamp_
-               ? distance_[static_cast<std::size_t>(node)]
+    return node_[static_cast<std::size_t>(node)].distance_stamp == search_stamp_
+               ? node_[static_cast<std::size_t>(node)].distance
                : kInf;
   }
 
   void set_distance(int node, double value) {
-    distance_[static_cast<std::size_t>(node)] = value;
-    distance_stamp_[static_cast<std::size_t>(node)] = search_stamp_;
+    node_[static_cast<std::size_t>(node)].distance = value;
+    node_[static_cast<std::size_t>(node)].distance_stamp = search_stamp_;
   }
 
   // The highest-gain residual path, as an early-exit Dijkstra over reduced
@@ -828,27 +882,28 @@ class Solver {
   //
   // Returns false when a reduced cost came out negative, meaning the potentials
   // have drifted or were invalidated; the caller rebuilds them.
-  bool dijkstra_path(int source, int target, std::vector<int>& path, Stats& stats) {
+  // Computes distances and the settled set. The caller then augments and
+  // applies the potential update.
+  bool dijkstra_scan(int source, int target, Stats& stats) {
     ++search_stamp_;
     ++stats.dijkstra_searches;
     heap_.clear();
     settled_.clear();
     set_distance(source, 0.0);
-    parent_[static_cast<std::size_t>(source)] = -1;
-    heap_.push_back({0.0, static_cast<int32_t>(source)});
+    node_[static_cast<std::size_t>(source)].parent = -1;
+    heap_.push(0.0, static_cast<int32_t>(source));
 
     double stop = 0.0;
     bool found = false;
     long long relaxations = 0;
 
     while (!heap_.empty()) {
-      std::pop_heap(heap_.begin(), heap_.end(), HeapGreater());
-      const HeapEntry top = heap_.back();
-      heap_.pop_back();
+      const HeapEntry top = heap_.pop();
       ++stats.heap_pops;
-      if (settled_stamp_[static_cast<std::size_t>(top.node)] == search_stamp_) continue;
-      settled_stamp_[static_cast<std::size_t>(top.node)] = search_stamp_;
+      if (node_[static_cast<std::size_t>(top.node)].settled_stamp == search_stamp_) continue;
+      node_[static_cast<std::size_t>(top.node)].settled_stamp = search_stamp_;
       settled_.push_back(top.node);
+      ++stats.settled_nodes;
       stop = top.key;
       if (top.node == target) {
         found = true;
@@ -856,15 +911,19 @@ class Solver {
       }
 
       const double base = top.key;
-      const double base_potential = potential_[static_cast<std::size_t>(top.node)];
+      const double base_potential = node_[static_cast<std::size_t>(top.node)].potential;
       const int32_t end = net_.arc_begin[static_cast<std::size_t>(top.node) + 1];
+      stats.arc_scans += end - net_.arc_begin[static_cast<std::size_t>(top.node)];
+      const bool check_blocked = blocked_arcs_ > 0;
+      const bool check_mask = !mask_is_full_;
       for (int32_t a = net_.arc_begin[static_cast<std::size_t>(top.node)]; a < end; ++a) {
-        if (net_.residual[static_cast<std::size_t>(a)] <= capacity_epsilon_ || blocked(a)) continue;
+        if (net_.residual[static_cast<std::size_t>(a)] <= capacity_epsilon_) continue;
+        if (check_blocked && blocked(a)) continue;
         const int32_t next = net_.head[static_cast<std::size_t>(a)];
-        if (!in_mask(next)) continue;
-        if (settled_stamp_[static_cast<std::size_t>(next)] == search_stamp_) continue;
-        double reduced = net_.cost[static_cast<std::size_t>(a)] + base_potential -
-                         potential_[static_cast<std::size_t>(next)];
+        if (check_mask && !in_mask(next)) continue;
+        NodeState& state = node_[static_cast<std::size_t>(next)];
+        if (state.settled_stamp == search_stamp_) continue;
+        double reduced = net_.cost[static_cast<std::size_t>(a)] + base_potential - state.potential;
         if (reduced < -potential_tolerance_) {
           // Drifted far enough to matter: the potentials are no longer a valid
           // reweighting, so stop and let them be rebuilt rather than quietly
@@ -878,29 +937,30 @@ class Solver {
         }
         if (reduced < 0.0) reduced = 0.0;  // Harmless rounding; keep it monotone.
         const double candidate = base + reduced;
-        if (candidate < distance_of(next)) {
-          set_distance(next, candidate);
-          parent_[static_cast<std::size_t>(next)] = a;
+        if (state.distance_stamp != search_stamp_ || candidate < state.distance) {
+          state.distance = candidate;
+          state.distance_stamp = search_stamp_;
+          state.parent = a;
           ++relaxations;
-          heap_.push_back({candidate, next});
-          std::push_heap(heap_.begin(), heap_.end(), HeapGreater());
+          heap_.push(candidate, next);
         }
       }
     }
     stats.relaxations += relaxations;
+    stop_distance_ = stop;
+    found_target_ = found;
+    return true;
+  }
 
-    // Re-tighten the potentials over the settled nodes. Shifting every
-    // potential by a constant changes no reduced cost, so subtracting the stop
-    // distance lets the untouched nodes keep their value and leaves the update
-    // proportional to the part of the graph the search actually visited.
+  // Re-tighten the potentials over the settled nodes. Shifting every potential
+  // by a constant changes no reduced cost, so subtracting the stop distance
+  // lets the untouched nodes keep their value and leaves the update
+  // proportional to the part of the graph the search actually visited.
+  void apply_potential_update() {
     for (const int32_t node : settled_) {
-      potential_[static_cast<std::size_t>(node)] +=
-          distance_[static_cast<std::size_t>(node)] - stop;
+      NodeState& state = node_[static_cast<std::size_t>(node)];
+      state.potential += state.distance - stop_distance_;
     }
-
-    path.clear();
-    if (!found) return true;  // No path; that is an answer, not a failure.
-    return build_path(source, target, path);
   }
 
   bool build_path(int source, int target, std::vector<int>& path) const {
@@ -912,7 +972,7 @@ class Solver {
         path.clear();
         return true;
       }
-      const int arc = parent_[static_cast<std::size_t>(node)];
+      const int arc = node_[static_cast<std::size_t>(node)].parent;
       if (arc < 0) {
         path.clear();
         return true;
@@ -931,7 +991,7 @@ class Solver {
     label_.assign(nodes, kNegInf);
     in_queue_.assign(nodes, 0);
     visit_count_.assign(nodes, 0);
-    std::fill(parent_.begin(), parent_.end(), -1);
+    for (NodeState& state : node_) state.parent = -1;
     label_[static_cast<std::size_t>(source)] = 0.0;
     queue_.clear();
     queue_.push_back(source);
@@ -949,8 +1009,17 @@ class Solver {
   bool find_max_gain_path(int source, int target, std::vector<int>& path, Stats& stats) {
     Timer timer(stats.path_search_seconds);
     if (options_.use_potentials && potentials_valid_) {
-      if (dijkstra_path(source, target, path, stats)) return true;
-      return false;  // Potentials invalidated; the caller rebuilds them.
+      if (!dijkstra_scan(source, target, stats)) {
+        return false;  // Potentials invalidated; the caller rebuilds them.
+      }
+      path.clear();
+      const bool found = found_target_;
+      if (found && !build_path(source, target, path)) {
+        apply_potential_update();
+        return false;
+      }
+      apply_potential_update();
+      return true;  // An empty path means no route to the sink, which is an answer.
     }
     return label_correcting_path(source, target, path, stats);
   }
@@ -958,11 +1027,11 @@ class Solver {
   // Any residual path, used to carry a cycle's excess to the sink when the
   // highest-gain search cannot produce one.
   bool find_any_path(int source, int target, std::vector<int>& path) {
-    std::fill(parent_.begin(), parent_.end(), -1);
+    for (NodeState& state : node_) state.parent = -1;
     ++search_stamp_;
     queue_.clear();
     queue_.push_back(source);
-    settled_stamp_[static_cast<std::size_t>(source)] = search_stamp_;
+    node_[static_cast<std::size_t>(source)].settled_stamp = search_stamp_;
     for (std::size_t cursor = 0; cursor < queue_.size(); ++cursor) {
       const int node = queue_[cursor];
       if (node == target) return build_path(source, target, path);
@@ -970,11 +1039,11 @@ class Solver {
       for (int32_t a = net_.arc_begin[static_cast<std::size_t>(node)]; a < end; ++a) {
         if (!usable(a)) continue;
         const int next = net_.head[static_cast<std::size_t>(a)];
-        if (!in_mask(next) || settled_stamp_[static_cast<std::size_t>(next)] == search_stamp_) {
+        if (!in_mask(next) || node_[static_cast<std::size_t>(next)].settled_stamp == search_stamp_) {
           continue;
         }
-        settled_stamp_[static_cast<std::size_t>(next)] = search_stamp_;
-        parent_[static_cast<std::size_t>(next)] = a;
+        node_[static_cast<std::size_t>(next)].settled_stamp = search_stamp_;
+        node_[static_cast<std::size_t>(next)].parent = a;
         queue_.push_back(next);
       }
     }
@@ -1047,7 +1116,7 @@ class Solver {
     for (const int edge : scratch_edges_) {
       const int forward = net_.forward_arc[static_cast<std::size_t>(edge)];
       const int backward = net_.twin[static_cast<std::size_t>(forward)];
-      const double gain = net_.gain[static_cast<std::size_t>(edge)];
+      const double gain = edge_gain(edge);
       const double entering = arc_coefficient_[static_cast<std::size_t>(forward)];
       const double retracted = arc_coefficient_[static_cast<std::size_t>(backward)];
       // Units of this edge's flow added per unit of x. Pushing `retracted * x`
@@ -1166,8 +1235,7 @@ class Solver {
         const int forward = net_.forward_arc[static_cast<std::size_t>(edge)];
         const int backward = net_.twin[static_cast<std::size_t>(forward)];
         const double delta = arc_delta_[static_cast<std::size_t>(forward)] -
-                             arc_delta_[static_cast<std::size_t>(backward)] /
-                                 net_.gain[static_cast<std::size_t>(edge)];
+                             arc_delta_[static_cast<std::size_t>(backward)] / edge_gain(edge);
         arc_delta_[static_cast<std::size_t>(forward)] = 0.0;
         arc_delta_[static_cast<std::size_t>(backward)] = 0.0;
         set_edge_flow(edge, net_.flow[static_cast<std::size_t>(edge)] + delta);
@@ -1312,14 +1380,12 @@ class Solver {
 
   Layout net_;
 
-  // Dijkstra state, stamped so nothing is cleared between searches.
-  std::vector<double> distance_;
-  std::vector<uint32_t> distance_stamp_;
-  std::vector<uint32_t> settled_stamp_;
-  std::vector<int32_t> parent_;
-  std::vector<double> potential_;
-  std::vector<HeapEntry> heap_;
+  // Path-search state, stamped so nothing is cleared between searches.
+  std::vector<NodeState> node_;
+  MinHeap heap_;
   std::vector<int32_t> settled_;
+  double stop_distance_ = 0.0;
+  bool found_target_ = false;
   uint32_t search_stamp_ = 0;
   bool potentials_valid_ = false;
 
@@ -1338,6 +1404,7 @@ class Solver {
   uint32_t colour_epoch_ = 0;
 
   std::vector<char> reaches_sink_;
+  bool mask_is_full_ = false;
   std::vector<int32_t> repair_seeds_;
   bool potentials_initialized_ = false;
   bool force_full_potentials_ = false;
