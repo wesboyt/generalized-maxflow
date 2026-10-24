@@ -51,8 +51,13 @@ flow solver has to account for gain downstream of the constriction.
 
 ## Try it
 
-The solver compiles to WebAssembly and runs in the page — the worked examples
-below plus a box for your own graphs, with nothing uploaded. To run it:
+### **[→ wesboyt.github.io/generalized-maxflow](https://wesboyt.github.io/generalized-maxflow/)**
+
+The solver compiled to WebAssembly, running in the page: the worked examples
+below plus a box for your own graphs. Nothing is uploaded — the whole solver is
+148 KB of WebAssembly and every graph is solved locally.
+
+To run it yourself:
 
 ```bash
 bindings/wasm/build.sh                       # needs the Emscripten SDK
@@ -60,11 +65,8 @@ cp bindings/wasm/pkg/{index.mjs,gmaxflow.js,gmaxflow.wasm} docs/demo/
 python -m http.server -d docs/demo 8000      # then open localhost:8000
 ```
 
-Every push also builds it in CI, downloadable as the `demo-site` artifact from
-the **demo** workflow. To host it at
-`https://wesboyt.github.io/generalized-maxflow/`, enable Pages under
-*Settings → Pages* with the source set to *GitHub Actions*, then run the
-**demo** workflow from the Actions tab.
+Every push also builds it in CI, downloadable as the `demo-site` artifact of the
+**demo** workflow; running that workflow by hand republishes the hosted copy.
 
 ## Install
 
