@@ -164,7 +164,7 @@ finite and strictly positive.
 | `cancel_generating_cycles` | `true` | set false to reject amplifying inputs instead of solving them |
 | `use_potentials` | `true` | set false to force the slow reference search (for cross-checking) |
 | `fat_path` | `true` | run the Tardos–Wayne Fat-Path scaling phases; false is plain highest-gain augmentation |
-| `gain_scaling` | `true` | round gains to powers of $(1+\xi)^{1/n}$ inside those phases |
+| `gain_scaling` | `true` | round gains to powers of $`(1+\xi)^{1/n}`$ inside those phases |
 | `pretty` | `false` | indent the output |
 
 ## Output
@@ -195,42 +195,50 @@ breakdown by phase and the solver's own memory footprint.
 
 ## 1. The problem
 
-Let $G=(V,E)$ be a directed graph with a source $s$ and a sink $t$. Each arc
-$e\in E$ has a capacity $u(e)\in[0,\infty]$ and a **multiplier** (or gain)
-$\gamma(e)>0$. A *generalized flow* is $f:E\to\mathbb{R}$ with
+Let $`G=(V,E)`$ be a directed graph with a source $`s`$ and a sink $`t`$. Each arc
+$`e\in E`$ has a capacity $`u(e)\in[0,\infty]`$ and a **multiplier** (or gain)
+$`\gamma(e)>0`$. A *generalized flow* is $`f:E\to\mathbb{R}`$ with
 
-$$0 \le f(e) \le u(e) \quad \forall e \in E,$$
+```math
+0 \le f(e) \le u(e) \quad \forall e \in E,
+```
 
-$$\sum_{e=(w,v)} \gamma(e)f(e) \;-\!\! \sum_{e=(v,w)} f(e) \;=\; 0
-\qquad \forall v \in V\setminus\{s,t\}.$$
+```math
+\sum_{e=(w,v)} \gamma(e)f(e) \;-\!\! \sum_{e=(v,w)} f(e) \;=\; 0
+\qquad \forall v \in V\setminus\{s,t\}.
+```
 
-Pushing $f(e)$ units into $e=(v,w)$ at $v$ delivers $\gamma(e)f(e)$ at $w$. The
+Pushing $`f(e)`$ units into $`e=(v,w)`$ at $`v`$ delivers $`\gamma(e)f(e)`$ at $`w`$. The
 objective is the net amount arriving at the sink,
 
-$$|f| \;=\; \sum_{e=(w,t)} \gamma(e)f(e) \;-\!\! \sum_{e=(t,w)} f(e),$$
+```math
+|f| \;=\; \sum_{e=(w,t)} \gamma(e)f(e) \;-\!\! \sum_{e=(t,w)} f(e),
+```
 
-to be maximised. With $\gamma \equiv 1$ this is ordinary maximum flow. It is a
+to be maximised. With $`\gamma \equiv 1`$ this is ordinary maximum flow. It is a
 linear program, which is how `tools/lp_check.py` verifies the solver
 independently.
 
-For a path or cycle $P$ write $\gamma(P)=\prod_{e\in P}\gamma(e)$. A cycle $C$
-with $\gamma(C)>1$ is **flow-generating**: traversing it returns more than was
+For a path or cycle $`P`$ write $`\gamma(P)=\prod_{e\in P}\gamma(e)`$. A cycle $`C`$
+with $`\gamma(C)>1`$ is **flow-generating**: traversing it returns more than was
 put in.
 
 ## 2. The residual network
 
-Each arc $e=(v,w)$ contributes two residual arcs,
+Each arc $`e=(v,w)`$ contributes two residual arcs,
 
 | arc | capacity | multiplier |
 | --- | --- | --- |
-| $e$, forward | $u(e)-f(e)$ | $\gamma(e)$ |
-| $e^{-1}=(w,v)$, backward | $\gamma(e)f(e)$ | $1/\gamma(e)$ |
+| $`e`$, forward | $`u(e)-f(e)`$ | $`\gamma(e)`$ |
+| $`e^{-1}=(w,v)`$, backward | $`\gamma(e)f(e)`$ | $`1/\gamma(e)`$ |
 
 The backward capacity is what the arc *delivered*, and its multiplier is the
-reciprocal, because retracting $y$ units at $w$ returns $y/\gamma(e)$ at $v$.
-Pushing $x$ into either direction is the single rule
+reciprocal, because retracting $`y`$ units at $`w`$ returns $`y/\gamma(e)`$ at $`v`$.
+Pushing $`x`$ into either direction is the single rule
 
-$$r(a) \mathrel{-}= x, \qquad r(a^{-1}) \mathrel{+}= x\,\gamma(a).$$
+```math
+r(a) \mathrel{-}= x, \qquad r(a^{-1}) \mathrel{+}= x\,\gamma(a).
+```
 
 Reverse arcs are required for correctness, not speed. Greedy highest-gain
 filling without them gets stuck exactly as plain Ford–Fulkerson does: the
@@ -240,43 +248,49 @@ first augmentation no search may assume all multipliers are below 1.
 
 ## 3. The bottleneck obeys the chain rule
 
-Along a path $P=(a_1,\dots,a_k)$ the amount entering $a_i$ when $x$ units enter
-$a_1$ is $x\prod_{j<i}\gamma(a_j)$. The largest feasible $x$ is therefore
+Along a path $`P=(a_1,\dots,a_k)`$ the amount entering $`a_i`$ when $`x`$ units enter
+$`a_1`$ is $`x\prod_{j<i}\gamma(a_j)`$. The largest feasible $`x`$ is therefore
 
-$$\delta(P) \;=\; \min_{1\le i\le k} \; \frac{r(a_i)}{\prod_{j<i}\gamma(a_j)},$$
+```math
+\delta(P) \;=\; \min_{1\le i\le k} \; \frac{r(a_i)}{\prod_{j<i}\gamma(a_j)},
+```
 
 and the arc attaining the minimum is the **constricting edge**. It is not the
 arc of smallest residual capacity: gain downstream of a constriction counts.
 
 When a walk uses an arc in both directions — a cycle one way and the route
 carrying its excess the other — the two uses *cancel* rather than compete.
-Writing $\alpha$ for the total coefficient on the forward arc of an edge and
-$\beta$ for that on its backward arc, the net change to that edge's flow per
-unit $x$ is $\nu = \alpha - \beta/\gamma$, and the limit is
+Writing $`\alpha`$ for the total coefficient on the forward arc of an edge and
+$`\beta`$ for that on its backward arc, the net change to that edge's flow per
+unit $`x`$ is $`\nu = \alpha - \beta/\gamma`$, and the limit is
 
-$$x \;\le\; \begin{cases}
+```math
+x \;\le\; \begin{cases}
  r(e)\,/\,\nu & \nu > 0,\\[2pt]
  r(e^{-1})\,/\,(-\nu\,\gamma) & \nu < 0,\\[2pt]
  \infty & \nu = 0.
-\end{cases}$$
+\end{cases}
+```
 
 Charging the two directions separately stays *feasible*, which is why the error
 is easy to miss; it only understates what the edge allows. It also made one
-40-node instance repeat a single cycle forever with $x$ shrinking by a tenth
-each time — 500 000 iterations moved the delivered flow by $3\times10^{-6}$.
+40-node instance repeat a single cycle forever with $`x`$ shrinking by a tenth
+each time — 500 000 iterations moved the delivered flow by $`3\times10^{-6}`$.
 
 ## 4. Highest-gain augmentation
 
 Maximising a product of multipliers is minimising a sum of logarithms. Set
 
-$$c(a) \;=\; -\ln \gamma(a),$$
+```math
+c(a) \;=\; -\ln \gamma(a),
+```
 
-so a highest-gain path is a shortest path under $c$, and a flow-generating cycle
+so a highest-gain path is a shortest path under $`c`$, and a flow-generating cycle
 is a negative-cost cycle. The solver works in this log space throughout, which
 also stops long lossy chains from underflowing: fifty halvings give
-$\gamma(P)=2^{-50}$, and a solver multiplying doubles loses such paths.
+$`\gamma(P)=2^{-50}`$, and a solver multiplying doubles loses such paths.
 
-Onaga's loop: while a residual $s\to t$ path exists, augment along one of
+Onaga's loop: while a residual $`s\to t`$ path exists, augment along one of
 maximum gain. The choice of *maximum* is what makes it correct. It is the exact
 finish of this solver; most of the flow is first placed by the Fat-Path phases
 of section 8, which choose paths by capacity as well as gain.
@@ -290,58 +304,62 @@ stopping test below no longer certifies anything.
 
 ## 5. Node potentials
 
-Maintain $\pi:V\to\mathbb{R}$ with non-negative **reduced costs**
+Maintain $`\pi:V\to\mathbb{R}`$ with non-negative **reduced costs**
 
-$$c_\pi(a) \;=\; c(a) + \pi(v) - \pi(w) \;\ge\; 0 \qquad \forall a=(v,w)
-\text{ residual}.$$
+```math
+c_\pi(a) \;=\; c(a) + \pi(v) - \pi(w) \;\ge\; 0 \qquad \forall a=(v,w)
+\text{ residual}.
+```
 
 Two facts make this the centre of the implementation.
 
-**Such a $\pi$ exists if and only if there is no flow-generating cycle.**
-Summing $c_\pi\ge 0$ around a cycle telescopes to $\sum c(a)\ge 0$, i.e.
-$\gamma(C)\le 1$. So a valid potential *is* a certificate that no amplifying
+**Such a $`\pi`$ exists if and only if there is no flow-generating cycle.**
+Summing $`c_\pi\ge 0`$ around a cycle telescopes to $`\sum c(a)\ge 0`$, i.e.
+$`\gamma(C)\le 1`$. So a valid potential *is* a certificate that no amplifying
 cycle exists, and the search for one is the same computation as the search for
 the other.
 
-**With $\pi$ in hand each augmentation is one Dijkstra.** Reduced costs are
+**With $`\pi`$ in hand each augmentation is one Dijkstra.** Reduced costs are
 non-negative, so the highest-gain path comes from an early-exit Dijkstra over
-$c_\pi$ instead of a label-correcting sweep over every arc. Tardos and Wayne put
-it the same way: *"an augmentation takes $\tilde O(m)$ time, using an algorithm
+$`c_\pi`$ instead of a label-correcting sweep over every arc. Tardos and Wayne put
+it the same way: *"an augmentation takes $`\tilde O(m)`$ time, using an algorithm
 based on Dijkstra's shortest path algorithm."*
 
-After a search that settles $S$ with distances $d$, stopping at $d_{\text{stop}}$:
+After a search that settles $`S`$ with distances $`d`$, stopping at $`d_{\text{stop}}`$:
 
-$$\pi(v) \;\mathrel{+}=\; d(v) - d_{\text{stop}} \qquad \forall v \in S,$$
+```math
+\pi(v) \;\mathrel{+}=\; d(v) - d_{\text{stop}} \qquad \forall v \in S,
+```
 
 leaving every other potential alone. This is valid because adding a constant to
 *all* potentials changes no reduced cost, so the update is the "shift by
-$d_{\text{stop}}$" that costs nothing plus a correction only on settled nodes.
-For $a=(v,w)$ with $v$ settled and $w$ not, $d(w)\ge d_{\text{stop}}$ gives
-$c_\pi(a)+d(v)-d_{\text{stop}}\ge 0$; the other cases are immediate. Arcs on the
-chosen path end at $c_\pi=0$, hence so do their reverses, which is why the new
-residual arcs an augmentation creates keep $\pi$ valid.
+$`d_{\text{stop}}`$" that costs nothing plus a correction only on settled nodes.
+For $`a=(v,w)`$ with $`v`$ settled and $`w`$ not, $`d(w)\ge d_{\text{stop}}`$ gives
+$`c_\pi(a)+d(v)-d_{\text{stop}}\ge 0`$; the other cases are immediate. Arcs on the
+chosen path end at $`c_\pi=0`$, hence so do their reverses, which is why the new
+residual arcs an augmentation creates keep $`\pi`$ valid.
 
-To re-establish $\pi$ from scratch, run a label-correcting sweep with every node
-of the sink-reaching subgraph starting at $\lambda(v)=0$ and relaxing
-$\lambda(w)\ge\lambda(v)+\ln\gamma(a)$; then $\pi=-\lambda$. Starting every node
+To re-establish $`\pi`$ from scratch, run a label-correcting sweep with every node
+of the sink-reaching subgraph starting at $`\lambda(v)=0`$ and relaxing
+$`\lambda(w)\ge\lambda(v)+\ln\gamma(a)`$; then $`\pi=-\lambda`$. Starting every node
 at zero, rather than only the source, is what lets it find a cycle *anywhere* —
 a cycle can manufacture flow with the source cut off entirely, as
-`examples/currency_arbitrage.json` does. Any $\lambda$ satisfying the
+`examples/currency_arbitrage.json` does. Any $`\lambda`$ satisfying the
 constraints works, not just the minimal one, so after a push the sweep is
 re-seeded only from the nodes that push disturbed.
 
 ## 6. Finding cycles without paying for them
 
-The textbook negative-cycle test waits for a node to be relaxed more than $|V|$
-times, which means up to $|V|$ passes over every arc *after* the cycle has
+The textbook negative-cycle test waits for a node to be relaxed more than $`|V|`$
+times, which means up to $`|V|`$ passes over every arc *after* the cycle has
 already formed. The parent forest closes within a few relaxations of the cycle
-appearing, so the solver scans it for a cycle every $|V|$ relaxations — an
-$O(V)$ walk with three-colour marking, so $O(1)$ amortised per relaxation. On a
+appearing, so the solver scans it for a cycle every $`|V|`$ relaxations — an
+$`O(V)`$ walk with three-colour marking, so $`O(1)`$ amortised per relaxation. On a
 dense amplifying network this replaced 14 million relaxations per cycle found
 with a few thousand.
 
 Two guards keep it honest. Relaxation requires improvement by at least
-$\varepsilon$, so a chain can close on a cycle whose gain is not actually above
+$`\varepsilon`$, so a chain can close on a cycle whose gain is not actually above
 one; every hit is verified before being acted on. And parent pointers outlive
 the search that set them, so a cycle read off them may name arcs that have since
 been saturated — every arc is re-checked for usable residual, because acting on
@@ -354,14 +372,14 @@ A flow-generating cycle together with a residual path from it to the sink is a
 **generalized augmenting path** (GAP): it manufactures flow and delivers it.
 
 > **Theorem (Onaga; Truemper, 1977).** A feasible generalized flow is maximum if
-> and only if its residual network contains neither an $s\to t$ path nor a
+> and only if its residual network contains neither an $`s\to t`$ path nor a
 > flow-generating cycle with a path to the sink.
 
 This follows from LP duality. An improving direction is a flow in the residual
-network conserved off $\{s,t\}$ that raises the net at $t$; decomposing it gives
+network conserved off $`\{s,t\}`$ that raises the net at $`t`$; decomposing it gives
 source-to-sink paths, flow-generating cycles with their excess routed somewhere,
 flow-absorbing cycles, and *bicycles* — a generating cycle joined to an
-absorbing one. Only two kinds raise the net at $t$, so if any direction
+absorbing one. Only two kinds raise the net at $`t`$, so if any direction
 improves, one of those two is present.
 
 The solver stops on this condition and reports it. Both checks are recomputed
@@ -378,57 +396,59 @@ edge flows, sharing no code with the solver.
 ## 8. Fat-Path with gain-scaling
 
 Onaga's loop has no useful bound on the number of augmentations: highest-gain
-first will happily spend an augmentation on a path that carries $10^{-9}$. The
+first will happily spend an augmentation on a path that carries $`10^{-9}`$. The
 solver therefore runs Tardos and Wayne's *Rounded Fat-Path* (IPCO 1998, §6)
 first, and leaves Onaga only the last scrap of the gap.
 
-**Fat paths.** Write $\mu(v)$ for the inverse of the best gain from $v$ to the
-sink, the *canonical label*. An arc is $\delta$-*fat* when it can raise the
-sink's excess by $\delta$, i.e. $r(a)/\mu(v)\ge\delta$, and a path is fat
-when every arc is. With potentials, $\mu(v)=e^{\pi(t)-\pi(v)}$, so the test is
+**Fat paths.** Write $`\mu(v)`$ for the inverse of the best gain from $`v`$ to the
+sink, the *canonical label*. An arc is $`\delta`$-*fat* when it can raise the
+sink's excess by $`\delta`$, i.e. $`r(a)/\mu(v)\ge\delta`$, and a path is fat
+when every arc is. With potentials, $`\mu(v)=e^{\pi(t)-\pi(v)}`$, so the test is
 one comparison per arc against a per-node threshold. The phases are:
 
-$$\begin{aligned}
+```math
+\begin{aligned}
 &\Delta \leftarrow \Delta_0 \ge \mathrm{OPT}-|f| \\
 &\textbf{repeat}\\
 &\quad \textsc{CancelCycles} \quad\text{(the relabelled network becomes lossy)}\\
 &\quad \textsc{FatAugmentations}(\Delta/2m) \quad\text{(highest-gain fat paths until none)}\\
 &\quad \Delta \leftarrow \Delta/2\\
 &\textbf{until } \Delta \text{ is below the tolerance}
-\end{aligned}$$
+\end{aligned}
+```
 
-Each fat augmentation either delivers $\delta=\Delta/2m$ or empties its source,
-so a phase makes at most $n+2m$ of them, and the discrepancy halves per phase:
-$O(\log(n/\xi))$ phases for a $\xi$-optimal flow. $\Delta_0$ is the cheaper
+Each fat augmentation either delivers $`\delta=\Delta/2m`$ or empties its source,
+so a phase makes at most $`n+2m`$ of them, and the discrepancy halves per phase:
+$`O(\log(n/\xi))`$ phases for a $`\xi`$-optimal flow. $`\Delta_0`$ is the cheaper
 of two cuts, what the sink's residual in-arcs can deliver and the relabelled
-capacity out of the source; a phase in which nothing fat exists jumps $\Delta$
+capacity out of the source; a phase in which nothing fat exists jumps $`\Delta`$
 straight down to the fattest arc the search had to skip, since every path leaves
 the fat subnetwork through one.
 
 **Canonical labels.** Every phase starts from exact labels: one Dijkstra
-*backwards* from the sink over the reduced costs gives $D(v)$, and
-$\pi(v)\leftarrow\pi(v)-D(v)$ makes $e^{\pi(v)-\pi(t)}$ the true best gain to
+*backwards* from the sink over the reduced costs gives $`D(v)`$, and
+$`\pi(v)\leftarrow\pi(v)-D(v)`$ makes $`e^{\pi(v)-\pi(t)}`$ the true best gain to
 the sink while keeping every reduced cost non-negative (it is the triangle
-inequality $D(v)\le c_\pi(v,w)+D(w)$). Reading fatness off stale potentials
+inequality $`D(v)\le c_\pi(v,w)+D(w)`$). Reading fatness off stale potentials
 instead — which on a lossy network claim a gain of one everywhere — filled paths
 that delivered almost nothing and cost 99 000 cycle cancellations on a 1 000-node
 instance.
 
-**Gain-scaling.** Rounding each gain down to a power of $b=(1+\xi)^{1/n}$ is
-rounding its cost up to a multiple of $q=\ln b$. In the relabelled lossy network
+**Gain-scaling.** Rounding each gain down to a power of $`b=(1+\xi)^{1/n}`$ is
+rounding its cost up to a multiple of $`q=\ln b`$. In the relabelled lossy network
 those costs are the reduced costs, so the rounded network is a Dijkstra on the
-integer keys $\lceil c_\pi(a)/q\rceil$. A search on those keys leaves every
-reduced cost above $-q$ — never below, however many searches run — so the phases
-keep $q$-optimal potentials, and CancelCycles need only remove cycles whose total
-log-gain exceeds $q$: exactly the cycles a sweep that ignores improvements
-smaller than $q$ cannot settle around. $\xi$ shrinks with $\Delta$ as
-$\xi=\min(\tfrac12,\Delta/\Delta_0)$. Rounding costs at most a factor
-$b^{|P|}\le 1+\xi$ on any path, which is Tardos and Wayne's Theorem 4.
+integer keys $`\lceil c_\pi(a)/q\rceil`$. A search on those keys leaves every
+reduced cost above $`-q`$ — never below, however many searches run — so the phases
+keep $`q`$-optimal potentials, and CancelCycles need only remove cycles whose total
+log-gain exceeds $`q`$: exactly the cycles a sweep that ignores improvements
+smaller than $`q`$ cannot settle around. $`\xi`$ shrinks with $`\Delta`$ as
+$`\xi=\min(\tfrac12,\Delta/\Delta_0)`$. Rounding costs at most a factor
+$`b^{|P|}\le 1+\xi`$ on any path, which is Tardos and Wayne's Theorem 4.
 
 **CancelCycles.** After a phase the potentials are valid on every arc except the
 thin ones the phase skipped, and every generating cycle passes through one of
-those. For a violating arc $(v,w)$ the most generating cycle through it is the
-arc plus the highest-gain $w\to v$ path over the certified arcs — one early-exit
+those. For a violating arc $`(v,w)`$ the most generating cycle through it is the
+arc plus the highest-gain $`w\to v`$ path over the certified arcs — one early-exit
 Dijkstra, after whose potential update the arc's reduced cost *is* the cycle's
 log-loss. Cancelling through violating arcs first, and only then running the
 label-correcting sweep for whatever two violating arcs share, cut a 3 200-node
@@ -446,16 +466,16 @@ so it delivers at least what the rounded network promised and nothing is
 stranded. And the paper's CancelCycles leaves each cycle's excess on the cycle
 for the next augmentations to collect; here it is carried to the sink with the
 cycle, as a generalized augmenting path. The paper's exact algorithm ends by
-rounding a $B^{-4m}$-optimal flow, which means nothing in floating point; instead
-the phases stop once $\Delta$ is below the tolerance and Onaga's loop finishes
-on the true gains, from a flow already within the last $\Delta$ of optimal.
+rounding a $`B^{-4m}`$-optimal flow, which means nothing in floating point; instead
+the phases stop once $`\Delta`$ is below the tolerance and Onaga's loop finishes
+on the true gains, from a flow already within the last $`\Delta`$ of optimal.
 `fat_path: false` and `gain_scaling: false` turn each layer off, and the tests
 check all three variants against each other.
 
 ## 9. Complexity
 
-Each search is $O(m\log n)$ with early exit. The Fat-Path phases bound the
-augmentations at $n+2m$ per phase over $O(\log(n/\xi))$ phases, which is what
+Each search is $`O(m\log n)`$ with early exit. The Fat-Path phases bound the
+augmentations at $`n+2m`$ per phase over $`O(\log(n/\xi))`$ phases, which is what
 replaces Onaga's unbounded count — Onaga's algorithm alone *"may run in
 exponential time (or may not even terminate for irrational inputs)"*. What the
 implementation does not inherit is the paper's bound on CancelCycles, which
@@ -468,14 +488,14 @@ it is reported as `iteration_limit` rather than dressed up as an answer.
 | | bound | note |
 | --- | --- | --- |
 | Goldberg–Plotkin–Tardos 1991 | first polynomial combinatorial | cancels *all* generating cycles as a batch |
-| Goldfarb–Jin–Orlin 1997 | $\tilde O(m^3\log B)$ | capacity scaling, highest-gain paths |
+| Goldfarb–Jin–Orlin 1997 | $`\tilde O(m^3\log B)`$ | capacity scaling, highest-gain paths |
 | **Tardos–Wayne 1998** | matches best known | **implemented here** (section 8): Fat-Path with gain-scaling |
-| Radzik 2004 | $\tilde O(m^2 n\log B)$ | best known weakly polynomial |
+| Radzik 2004 | $`\tilde O(m^2 n\log B)`$ | best known weakly polynomial |
 | Végh 2016 | strongly polynomial | first such result; continuous scaling |
-| Olver–Végh 2017 | $O((m+n\log n)\,mn\log(n^2/m))$ | simpler and faster strongly polynomial |
+| Olver–Végh 2017 | $`O((m+n\log n)\,mn\log(n^2/m))`$ | simpler and faster strongly polynomial |
 
 The strongly polynomial results are landmarks but not implementation guides: at
-$n=10^3$, $m=5\times10^3$ the Olver–Végh bound is on the order of $10^{11}$
+$`n=10^3`$, $`m=5\times10^3`$ the Olver–Végh bound is on the order of $`10^{11}`$
 operations, far above what augmenting paths cost in practice. The preflow-push
 variant in the Tardos–Wayne paper is the natural next step.
 
@@ -512,14 +532,14 @@ browser build would stay sequential regardless.
 
 The parallel sweep as built was also 780× *slower* than the sequential one, for
 two reasons worth recording: it spawned threads per frontier round rather than
-once, and it lacked the parent-forest cycle check, so it ran the full $|V|$-round
+once, and it lacked the parent-forest cycle check, so it ran the full $`|V|`$-round
 bound while the sequential path aborted in a few thousand relaxations. Fixing
 both would have bought a fraction of a 1.5× on one input class. It was removed
 rather than kept.
 
 ## Performance
 
-AMD, single core, release build. `layered` is $\sqrt n$ layers of $\sqrt n$
+AMD, single core, release build. `layered` is $`\sqrt n`$ layers of $`\sqrt n`$
 nodes — deep graphs where shortest paths are hundreds of arcs long; `uniform` is
 a random graph.
 
@@ -550,7 +570,7 @@ through memory with no indirection. Multiplier and capacity live once per edge
 rather than twice per arc — and are not copied from the caller's problem at all.
 Incoming arcs are derived as twins of outgoing ones instead of a second
 adjacency. Scratch arrays are stamped rather than cleared, so a search costs the
-subgraph it touches rather than $O(V)$. The steps of every augmentation share
+subgraph it touches rather than $`O(V)`$. The steps of every augmentation share
 one array at 16 bytes each; `collect_paths: false` drops it entirely.
 
 ## How it is checked
