@@ -259,7 +259,7 @@ and the arc attaining the minimum is the **constricting edge**. It is not the
 arc of smallest residual capacity: gain downstream of a constriction counts.
 
 When a walk uses an arc in both directions — a cycle one way and the route
-carrying its excess the other — the two uses *cancel* rather than compete.
+carrying its excess the other — the two use *cancel* rather than compete.
 Writing $`\alpha`$ for the total coefficient on the forward arc of an edge and
 $`\beta`$ for that on its backward arc, the net change to that edge's flow per
 unit $`x`$ is $`\nu = \alpha - \beta/\gamma`$, and the limit is
