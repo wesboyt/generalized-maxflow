@@ -197,7 +197,7 @@ breakdown by phase and the solver's own memory footprint.
 
 Let $`G=(V,E)`$ be a directed graph with a source $`s`$ and a sink $`t`$. Each arc
 $`e\in E`$ has a capacity $`u(e)\in[0,\infty]`$ and a **multiplier** (or gain)
-$`\gamma(e)>0`$. A *generalized flow* is $`f:E\to\mathbb{R}`$ with
+$`\gamma(e)\gt 0`$. A *generalized flow* is $`f:E\to\mathbb{R}`$ with
 
 ```math
 0 \le f(e) \le u(e) \quad \forall e \in E,
@@ -220,7 +220,7 @@ linear program, which is how `tools/lp_check.py` verifies the solver
 independently.
 
 For a path or cycle $`P`$ write $`\gamma(P)=\prod_{e\in P}\gamma(e)`$. A cycle $`C`$
-with $`\gamma(C)>1`$ is **flow-generating**: traversing it returns more than was
+with $`\gamma(C)\gt 1`$ is **flow-generating**: traversing it returns more than was
 put in.
 
 ## 2. The residual network
@@ -249,10 +249,10 @@ first augmentation no search may assume all multipliers are below 1.
 ## 3. The bottleneck obeys the chain rule
 
 Along a path $`P=(a_1,\dots,a_k)`$ the amount entering $`a_i`$ when $`x`$ units enter
-$`a_1`$ is $`x\prod_{j<i}\gamma(a_j)`$. The largest feasible $`x`$ is therefore
+$`a_1`$ is $`x\prod_{j\lt i}\gamma(a_j)`$. The largest feasible $`x`$ is therefore
 
 ```math
-\delta(P) \;=\; \min_{1\le i\le k} \; \frac{r(a_i)}{\prod_{j<i}\gamma(a_j)},
+\delta(P) \;=\; \min_{1\le i\le k} \; \frac{r(a_i)}{\prod_{j\lt i}\gamma(a_j)},
 ```
 
 and the arc attaining the minimum is the **constricting edge**. It is not the
@@ -266,8 +266,8 @@ unit $`x`$ is $`\nu = \alpha - \beta/\gamma`$, and the limit is
 
 ```math
 x \;\le\; \begin{cases}
- r(e)\,/\,\nu & \nu > 0,\\[2pt]
- r(e^{-1})\,/\,(-\nu\,\gamma) & \nu < 0,\\[2pt]
+ r(e)\,/\,\nu & \nu \gt  0,\\[2pt]
+ r(e^{-1})\,/\,(-\nu\,\gamma) & \nu \lt  0,\\[2pt]
  \infty & \nu = 0.
 \end{cases}
 ```
