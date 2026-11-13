@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 
 project(generalized-maxflow
-  VERSION 0.3.0
+  VERSION 0.4.0
   DESCRIPTION "Generalized maximum flow: maximum flow with per-edge gain multipliers"
   LANGUAGES CXX)
 
@@ -134,8 +134,8 @@ if(EMSCRIPTEN)
     "-sEXPORT_ES6=1"
     "-sEXPORT_NAME=createGmaxflow"
     "-sALLOW_MEMORY_GROWTH=1"
-    "-sEXPORTED_FUNCTIONS=['_gmf_solve_json','_gmf_solve_json_n','_gmf_free','_gmf_version','_malloc','_free']"
-    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
+    "-sEXPORTED_FUNCTIONS=['_gmf_solve_json','_gmf_solve_json_n','_gmf_solve_arrays','_gmf_solve_arrays_flows','_gmf_free','_gmf_version','_malloc','_free']"
+    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','HEAP32','HEAPF64']"
     "-sENVIRONMENT=web,worker,node"
     "--no-entry")
 endif()

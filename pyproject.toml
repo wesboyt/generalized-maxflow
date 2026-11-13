@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "generalized-maxflow"
-version = "0.3.0"
+version = "0.4.0"
 description = "Generalized maximum flow: maximum flow with per-edge gain multipliers"
 readme = "README.md"
 requires-python = ">=3.8"

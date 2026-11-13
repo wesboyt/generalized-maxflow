@@ -116,6 +116,15 @@ export interface Graph {
   options?: Options;
 }
 
+export interface ArraysAnswer {
+  /** 0 optimal, 1 not certified, 2 malformed graph, 3 out of memory. */
+  status: 0 | 1 | 2 | 3;
+  optimal: boolean;
+  maxFlow: number;
+  /** Units entering each edge, when requested. */
+  edgeFlow?: Float64Array;
+}
+
 export interface Solver {
   /** Solves a graph object (or JSON text) and returns the answer object. */
   solve(graph: Graph | string): Answer;
@@ -123,6 +132,20 @@ export interface Solver {
   solveText(request: string): string;
   /** The flow delivered at the sink; Infinity when unbounded. */
   maxFlow(graph: Graph | string): number;
+  /**
+   * Solves a graph held as parallel arrays, copied straight into the
+   * WebAssembly heap with no JSON. A capacity < 0 or Infinity is unbounded.
+   */
+  solveArrays(
+    numNodes: number,
+    source: number,
+    sink: number,
+    from: ArrayLike<number>,
+    to: ArrayLike<number>,
+    capacity: ArrayLike<number>,
+    multiplier: ArrayLike<number>,
+    options?: { edgeFlow?: boolean },
+  ): ArraysAnswer;
   version(): string;
   /** The underlying Emscripten runtime. */
   runtime: unknown;

@@ -86,4 +86,16 @@ const solver = await createSolver();
   assert.equal(JSON.parse(text).max_flow, 2);
 }
 
+
+{
+  // The array interface agrees with the JSON one and reports edge flows.
+  const r = solver.solveArrays(3, 0, 2, Int32Array.of(0, 1), Int32Array.of(1, 2),
+    Float64Array.of(10, 5), Float64Array.of(1, 2), { edgeFlow: true });
+  assert.equal(r.status, 0);
+  assert.equal(r.maxFlow, 10);
+  assert.deepEqual(Array.from(r.edgeFlow), [5, 5]);
+  const bad = solver.solveArrays(2, 0, 1, [0], [7], [1], [1]);
+  assert.equal(bad.status, 2);
+}
+
 console.log("wasm smoke test passed");

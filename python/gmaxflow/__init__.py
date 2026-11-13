@@ -35,6 +35,7 @@ __all__ = [
     "solve",
     "solve_json",
     "max_flow",
+    "max_flow_arrays",
     "version",
     "InvalidGraphError",
     "NotOptimalError",
@@ -126,6 +127,45 @@ def max_flow(graph: Graph, **options: Any) -> float:
     network admits unbounded flow.
     """
     return float(solve(graph, **options)["max_flow"])
+
+
+def max_flow_arrays(
+    num_nodes: int,
+    source: int,
+    sink: int,
+    frm: Any,
+    to: Any,
+    capacity: Any,
+    multiplier: Any,
+    *,
+    edge_flow: Any = None,
+    require_optimal: bool = True,
+) -> float:
+    """The maximum flow of a graph held as parallel arrays, with no JSON.
+
+    Edge ``e`` runs ``frm[e] -> to[e]`` with ``capacity[e]`` (negative or
+    ``inf`` = unbounded) and ``multiplier[e]``; nodes are ``0 .. num_nodes-1``.
+    Contiguous int32 / float64 buffers (numpy arrays, ``array.array('i')`` /
+    ``array.array('d')``) are read in place; anything else is copied once.
+    Pass a writable float64 buffer of ``len(frm)`` entries as `edge_flow` to
+    receive the units entering each edge.
+
+    This is the fast path for many small solves: on graphs of a few hundred
+    edges it skips the JSON encode, parse and answer that dominate `solve`.
+
+    Raises `InvalidGraphError` on a malformed graph, `NotOptimalError` (with an
+    empty ``answer``) when `require_optimal` and the answer is not certified.
+    """
+    status, value = _native.solve_arrays(
+        num_nodes, source, sink, frm, to, capacity, multiplier, edge_flow
+    )
+    if status == 2:
+        raise InvalidGraphError("invalid graph arrays")
+    if status == 3:
+        raise MemoryError("the solver ran out of memory")
+    if status == 1 and require_optimal:
+        raise NotOptimalError("the solver did not certify the answer", {"max_flow": value})
+    return float(value)
 
 
 def version() -> str:

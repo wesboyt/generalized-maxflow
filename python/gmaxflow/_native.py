@@ -52,6 +52,67 @@ _lib.gmf_free.argtypes = [ctypes.c_void_p]
 _lib.gmf_version.restype = ctypes.c_char_p
 _lib.gmf_version.argtypes = []
 
+_INT_P = ctypes.POINTER(ctypes.c_int)
+_DOUBLE_P = ctypes.POINTER(ctypes.c_double)
+_HAS_ARRAYS = hasattr(_lib, "gmf_solve_arrays_flows")
+if _HAS_ARRAYS:
+    _lib.gmf_solve_arrays_flows.restype = ctypes.c_int
+    _lib.gmf_solve_arrays_flows.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        _INT_P, _INT_P, _DOUBLE_P, _DOUBLE_P, _DOUBLE_P, _DOUBLE_P,
+    ]
+
+
+def _as_c(values, ctype, count):
+    """A ctypes view of `values` without copying when it already is contiguous
+    memory of the right type (a numpy array, array.array, memoryview); else a
+    copy. Returns (pointer, keep-alive object)."""
+    try:
+        view = memoryview(values)
+    except TypeError:
+        view = None
+    if (
+        view is not None
+        and view.contiguous
+        and view.ndim == 1
+        and view.itemsize == ctypes.sizeof(ctype)
+        and view.format in (("i", "l") if ctype is ctypes.c_int else ("d",))
+        and len(view) == count
+        and not view.readonly
+    ):
+        buffer = (ctype * count).from_buffer(view)
+        return ctypes.cast(buffer, ctypes.POINTER(ctype)), (view, buffer)
+    copy = (ctype * count)(*values)
+    return ctypes.cast(copy, ctypes.POINTER(ctype)), copy
+
+
+def solve_arrays(num_nodes, source, sink, frm, to, capacity, multiplier, edge_flow):
+    """Returns (status code, max flow). Writes per-edge flows into `edge_flow`
+    (a writable float64 buffer of len(frm)) when it is not None."""
+    if not _HAS_ARRAYS:
+        raise RuntimeError("the loaded native library predates gmf_solve_arrays_flows")
+    count = len(frm)
+    if not (len(to) == len(capacity) == len(multiplier) == count):
+        raise ValueError("from, to, capacity and multiplier must have the same length")
+    keep = []
+    pointers = []
+    for values, ctype in ((frm, ctypes.c_int), (to, ctypes.c_int),
+                          (capacity, ctypes.c_double), (multiplier, ctypes.c_double)):
+        pointer, alive = _as_c(values, ctype, count)
+        pointers.append(pointer)
+        keep.append(alive)
+    flows = None
+    if edge_flow is not None:
+        flows, alive = _as_c(edge_flow, ctypes.c_double, count)
+        if not isinstance(alive, tuple):
+            raise ValueError("edge_flow must be a writable float64 buffer of len(from) entries")
+        keep.append(alive)
+    out = ctypes.c_double(0.0)
+    status = _lib.gmf_solve_arrays_flows(
+        int(num_nodes), int(source), int(sink), count, *pointers, ctypes.byref(out), flows
+    )
+    return status, out.value
+
 
 def solve_json(request: str) -> str:
     """Solve the JSON request and return the JSON answer."""

@@ -117,6 +117,44 @@ const answer = solver.solve(graph);     // takes and returns plain objects
 console.log(answer.max_flow);
 ```
 
+### Arrays straight from memory
+
+For many small solves — a regret label per decision, a lattice per window —
+the JSON round trip costs more than the solve. `max_flow_arrays` and
+`solveArrays` take the graph as parallel arrays, read in place from memory the
+caller already holds (numpy / `array.array` buffers in Python, typed arrays
+copied straight into the WebAssembly heap in JavaScript), and return numbers:
+
+```python
+import numpy as np, gmaxflow
+
+frm = np.array([0, 1], np.int32); to = np.array([1, 2], np.int32)
+cap = np.array([10.0, 5.0]);      mul = np.array([1.0, 2.0])   # cap < 0 = unbounded
+flow = np.zeros(2)                                               # optional, filled in place
+gmaxflow.max_flow_arrays(3, 0, 2, frm, to, cap, mul, edge_flow=flow)   # 10.0; flow == [5, 5]
+```
+
+```js
+const r = solver.solveArrays(3, 0, 2, Int32Array.of(0, 1), Int32Array.of(1, 2),
+                             Float64Array.of(10, 5), Float64Array.of(1, 2), { edgeFlow: true });
+// r.maxFlow === 10, r.edgeFlow is a Float64Array
+```
+
+The C ABI underneath is `gmf_solve_arrays_flows` (and `gmf_solve_arrays`
+without flows) in `bindings/c/capi.cpp`. Paths are not recorded on this route.
+On time-expanded trading lattices (`python tools/bench_arrays.py`, one core,
+same answer to 1e-9 on every instance):
+
+| layers | edges | JSON | arrays | speed-up |
+| --- | --- | --- | --- | --- |
+| 4 | 49 | 1.14 ms | 0.057 ms | **20x** |
+| 16 | 193 | 3.82 ms | 0.118 ms | **32x** |
+| 64 | 769 | 18.2 ms | 1.27 ms | **14x** |
+| 256 | 3 073 | 85.8 ms | 17.8 ms | **4.8x** |
+
+The gain is largest where the solve is small and the encoding dominates; on
+large graphs the solve itself takes over.
+
 Command line (reads a file or stdin, writes JSON):
 
 ```bash

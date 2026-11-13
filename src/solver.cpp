@@ -1768,6 +1768,6 @@ Result solve(const Problem& problem, const Options& options) {
   return solver.run();
 }
 
-const char* version() { return "0.3.0"; }
+const char* version() { return "0.4.0"; }
 
 }  // namespace gmf

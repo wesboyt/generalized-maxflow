@@ -216,3 +216,54 @@ def test_the_installed_package_carries_its_own_native_library():
     package = os.path.normcase(os.path.dirname(os.path.abspath(gmaxflow.__file__)))
     assert not package.startswith(checkout), "imported the checkout, not the wheel"
     assert os.path.isfile(_native.library_path())
+
+
+def test_the_array_interface_matches_the_json_one():
+    import array
+
+    frm = array.array("i", [0, 1, 0])
+    to = array.array("i", [1, 2, 2])
+    cap = array.array("d", [10.0, 5.0, 4.0])
+    mul = array.array("d", [1.0, 2.0, 0.5])
+    flows = array.array("d", [0.0, 0.0, 0.0])
+    got = gmaxflow.max_flow_arrays(3, 0, 2, frm, to, cap, mul, edge_flow=flows)
+    want = gmaxflow.max_flow({
+        "source": 0, "sink": 2,
+        "edges": [
+            {"from": 0, "to": 1, "capacity": 10, "multiplier": 1.0},
+            {"from": 1, "to": 2, "capacity": 5, "multiplier": 2.0},
+            {"from": 0, "to": 2, "capacity": 4, "multiplier": 0.5},
+        ],
+    })
+    assert got == pytest.approx(want) == pytest.approx(12.0)
+    assert list(flows) == pytest.approx([5.0, 5.0, 4.0])
+
+
+def test_a_negative_capacity_is_unbounded_in_the_array_interface():
+    got = gmaxflow.max_flow_arrays(3, 0, 2, [0, 1], [1, 2], [-1.0, 5.0], [1.0, 2.0])
+    assert got == pytest.approx(10.0)
+
+
+def test_the_array_interface_reports_edge_flows():
+    import array
+
+    out = array.array("d", [0.0, 0.0])
+    got = gmaxflow.max_flow_arrays(3, 0, 2, [0, 1], [1, 2], [10.0, 5.0], [1.0, 2.0], edge_flow=out)
+    assert got == pytest.approx(10.0)
+    assert list(out) == pytest.approx([5.0, 5.0])
+
+
+def test_the_array_interface_reads_numpy_in_place():
+    np = pytest.importorskip("numpy")
+    frm = np.array([0, 1], np.int32)
+    to = np.array([1, 2], np.int32)
+    cap = np.array([3.0, 3.0])
+    mul = np.array([0.5, 4.0])
+    flows = np.zeros(2)
+    assert gmaxflow.max_flow_arrays(3, 0, 2, frm, to, cap, mul, edge_flow=flows) == pytest.approx(6.0)
+    assert flows.tolist() == pytest.approx([3.0, 1.5])
+
+
+def test_the_array_interface_rejects_a_bad_node():
+    with pytest.raises(gmaxflow.InvalidGraphError):
+        gmaxflow.max_flow_arrays(2, 0, 1, [0], [9], [1.0], [1.0])
